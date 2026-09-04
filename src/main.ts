@@ -45,6 +45,7 @@ import { shouldUnloadEmbedder, type UnloadGateState } from './embedder-lifecycle
 import { drainCatchUp, CATCHUP_MAX_FILES_PER_BURST, CATCHUP_BURST_BUDGET_MS } from './catchup';
 import { TaskContextTracker, type TaskContext } from './task-context';
 import type { LongTaskEntry, MemoryPressureEntry, StorageSnapshotEntry, EvictionSuspectedEntry, AppLocalFetchEntry } from './types';
+import { exportMcpIndex } from './mcp-export';
 
 // Long-task threshold. PerformanceObserver fires for any task ≥50 ms by spec,
 // but at that floor we'd flood the log. 250 ms is the rough threshold above
@@ -434,6 +435,15 @@ export default class SeekPlugin extends Plugin {
         // existing index off it into the literal path on upgrade.
         const legacySidecarDir = this.manifest.dir ? `${this.manifest.dir}/index` : null;
         this.orchestrator = new SearchOrchestrator(this.app, this.store, this.embedder, this.logger, this.settings, this.forensics, sidecarIndexDir, this.taskCtx);
+        this.addCommand({
+            id: 'seek-export-mcp-index',
+            name: 'Export complete MCP index',
+            callback: () => {
+                void exportMcpIndex(this.app.vault.adapter, this.store)
+                    .then(meta => new Notice(`Seek: exported ${meta.chunkCount} chunks for MCP`))
+                    .catch(error => new Notice(`Seek MCP export failed: ${error instanceof Error ? error.message : String(error)}`));
+            },
+        });
         // The orchestrator is pull-based; this is its one injected outbound edge — it
         // fires when persistent frame/BM25 drift survives the cooldown, and we drive the
         // embed-free recovery ladder from the plugin (which owns scheduling + gating).
