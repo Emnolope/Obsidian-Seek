@@ -14,6 +14,12 @@ import { IndexStore } from './index-store';
 import { Scenario } from './test-harness/scenario';
 import type { Chunk } from './types';
 import type { QuantVec } from './quant';
+import { exportMcpIndex } from './mcp-export';
+
+vi.mock('./mcp-export', async () => {
+    const actual = await vi.importActual<typeof import('./mcp-export')>('./mcp-export');
+    return { ...actual, exportMcpIndex: vi.fn(actual.exportMcpIndex) };
+});
 
 function chunk(id: string, content: string, notePath = `${id}.md`): Chunk {
     return {
@@ -90,6 +96,26 @@ describe('putBatchQuantized + fileRecord — one atomic transaction (Tier-1)', (
 describe('record-only commit through the real engine (Tier-2)', () => {
     let active: Scenario | null = null;
     afterEach(async () => { await active?.teardown(); active = null; });
+
+    it('exports MCP data on the successful pass commit boundary', async () => {
+        const s = new Scenario();
+        await s.boot();
+        active = s;
+        s.vault.write('alpha.md', 'alpha beta gamma', 1000);
+        s.vault.adapter = {
+            mkdir: async () => {},
+            exists: async () => false,
+            write: async () => {},
+            remove: async () => {},
+            rename: async () => {},
+        } as never;
+
+        const spy = vi.mocked(exportMcpIndex);
+        spy.mockClear();
+        await s.orch.reindexAll();
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(spy.mock.calls[0][1]).toBe(s.store);
+    });
 
     // A file whose EVERY chunk deterministically fails to embed (survives batch +
     // solo retries) must still commit its failure-marker record — now via the

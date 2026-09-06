@@ -42,6 +42,7 @@ import { isMobilePlatform, residentInt8Enabled } from './platform';
 import { parseQuery, compileMatcher, excludedNotePaths } from './query-parser';
 import { buildPassageTerms, passageWindow, type PassageTerm } from './passage';
 import { enumerateNumberPropertyNames } from './prop-types';
+import { exportMcpIndex } from './mcp-export';
 
 // Indexing batches via PER-BUCKET ROLLING BUFFERS (2026-06-03 redesign).
 //
@@ -339,6 +340,20 @@ export class SearchOrchestrator {
         return this.coord.isWriting() || this.sidecarFlushesInFlight > 0;
     }
 
+    // Purple-shirt hook: this is the visible MCP export integration point, tied to
+    // the same successful pass completion that committed the index. We do NOT add a
+    // second generation protocol or separate bookkeeping layer — the export is just
+    // derived from the already-committed IDB state immediately after a successful
+    // reindex/delta completes.
+    private async exportMcpAfterSuccessfulCommit(mode: 'full' | 'incremental'): Promise<void> {
+        try {
+            const meta = await exportMcpIndex(this.app.vault.adapter, this.store);
+            this.forensics?.beat('mcp-export', { mode, generation: meta.generation, chunkCount: meta.chunkCount });
+        } catch (e) {
+            await this.logger.appendError(`mcp-export:${mode}`, e).catch(() => {});
+        }
+    }
+
     // Full reindex. Drops the database, walks all markdown, re-embeds everything.
     // Serialized against deltas via the write mutex (a delta mid-nuke would throw).
     async reindexAll(onProgress?: (msg: string) => void, opts: { shouldContinue?: () => boolean } = {}): Promise<IndexCompleteEntry> {
@@ -350,6 +365,7 @@ export class SearchOrchestrator {
             // mutex has released, still awaited so "reindexAll resolved ⇒ sidecar
             // flushed" holds for every caller.
             await this.flushSidecarAfterPass(inner.sidecarJob);
+            await this.exportMcpAfterSuccessfulCommit('full');
         } catch (e) {
             // Pass-level quota (S2): the per-file classifier only sees commitFile's
             // catch; on a truly full disk the pass's OWN writes (the post-nuke
@@ -2016,6 +2032,9 @@ export class SearchOrchestrator {
             // "delta resolved ⇒ sidecar flushed". flushSidecarAfterPass never
             // rejects, so this can't mask the critical section's own error.
             this.flushSidecarAfterPass(sidecarJob));
+        if (result.deletedChunks > 0 || result.deletedPaths > 0 || result.embedded || result.sidecarHydrated > 0 || result.carriedOver > 0) {
+            await this.exportMcpAfterSuccessfulCommit('incremental');
+        }
         // v16 (issue #5): persist the patch outcome. Off the mutex,
         // fire-and-forget — telemetry never delays the pass. (Local copy: the
         // closure assignment above defeats TS's narrowing on the outer let.)
