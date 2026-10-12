@@ -2,6 +2,14 @@
 
 All notable changes to Seek are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.2.1
+
+### Added
+- **A Seek search button in the ribbon.** It opens the search modal, like the Search command. On a phone you can make it the one-tap button in the bottom navigation bar under Settings → Appearance → Quick access ribbon item. Thanks to RudolfChristen for the suggestion ([#9](https://github.com/ryan-manor/Obsidian-Seek/issues/9)).
+
+### Fixed
+- The GitHub link at the bottom of Seek's settings pointed at an old repository. Thanks to GaryLee1101 for the fix ([#6](https://github.com/ryan-manor/Obsidian-Seek/issues/6)).
+
 ## 1.2.0
 
 Indexing and search quality release, headlined by a fix for a community bug report ([#8](https://github.com/ryan-manor/Obsidian-Seek/issues/8)), thank you! No reindex is needed, since the index format is unchanged.
