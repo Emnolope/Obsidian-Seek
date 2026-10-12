@@ -153,4 +153,48 @@ describe('Tier-2 scenario harness', () => {
         expect(paths.has('note.md')).toBe(false);
         expect(paths.has('keep.md')).toBe(true);
     });
+
+    // ── Scenario 6 — synonyms v2: piped-link mining end to end ──────────────
+    // The full T2 loop composed through the real pipeline: cold build →
+    // ensureBm25 mines metadataCache (the fake getFileCache) → matchPhrases
+    // fires on the spelled-out query → the mate reaches a short-form-only note
+    // → an edit that removes the piped links retires the mate on the NEXT
+    // search (applyDelta's per-path re-mine). Valve semantics ride the per-call
+    // ExperimentOverride, the exact CLI synv2 path — settings stay at the
+    // shipped default (OFF) throughout, pinning that the DICTIONARY still
+    // builds and only consumption is gated.
+    it('synonyms v2: a mined piped-link display reaches a mate-only note, and un-linking retires it', async () => {
+        const s = await boot();
+        // Two piped usages clear T2_MIN_COUNT. The df ceiling is REAL here
+        // (5% of chunks), so pad the corpus with fillers: "qu" appears in 2
+        // notes → needs ≥41 docs to stay under the ceiling.
+        s.vault.write('notes.md', 'see [[Query Understanding|QU]] and [[Query Understanding|QU]] again', 1000);
+        s.vault.write('qu.md', 'QU relevance work item', 1000);   // never says query/understanding
+        for (let i = 0; i < 45; i++) {
+            s.vault.write(`filler${i}.md`, `filler note number ${i} about topic${i}`, 1000);
+        }
+        await s.coldStart();
+
+        const q = 'query understanding planning';
+        const on1 = await s.orch.search(q, 10, undefined, { synonymsV2: true });
+        const off1 = await s.orch.search(q, 10, undefined, { synonymsV2: false });
+
+        // The valve gates consumption only: ON fires the phrase mate...
+        expect(on1.entry.phraseMatesFired).toBe(1);
+        expect(on1.entry.synonymsV2).toBe(true);
+        // ...OFF writes neither telemetry field (absent ⇒ off).
+        expect(off1.entry.synonymsV2).toBeUndefined();
+        expect(off1.entry.phraseMatesFired).toBeUndefined();
+        // And the mate is what reaches qu.md: its fused score strictly
+        // improves when the phrase mate fires (BM25 0 → mate-discounted hit).
+        const quOn = on1.results.find(r => r.note_path === 'qu.md')?.score ?? 0;
+        const quOff = off1.results.find(r => r.note_path === 'qu.md')?.score ?? 0;
+        expect(quOn).toBeGreaterThan(quOff);
+
+        // Un-link: the edit re-mines notes.md's pairs (applyDelta touched-path
+        // patch), dropping the dictionary entry — no piped links, no mate.
+        await s.edit('notes.md', 'see Query Understanding twice, no links here', 2000);
+        const on2 = await s.orch.search(q, 10, undefined, { synonymsV2: true });
+        expect(on2.entry.phraseMatesFired).toBe(0);
+    });
 });

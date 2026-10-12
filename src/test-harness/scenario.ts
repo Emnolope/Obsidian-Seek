@@ -62,6 +62,10 @@ export class FakeVault {
     // scenarios (indexDir=null), so the index path never dereferences it.
     adapter = {} as never;
 
+    // Synchronous content read for the fake metadataCache's getFileCache (the
+    // real cache is synchronous too). Null for unknown paths, like Obsidian.
+    contentOf(path: string): string | null { return this.files.get(path)?.content ?? null; }
+
     private list(pred: (p: string) => boolean): TFile[] {
         return [...this.files].filter(([p]) => pred(p)).map(([p, f]) => this.tf(p, f));
     }
@@ -72,6 +76,28 @@ export class FakeVault {
         t.extension = path.split('.').pop() ?? '';   // `f.extension === 'base'` gate in search.ts
         return t;
     }
+}
+
+// ── fake metadataCache.getFileCache: wikilinks parsed from vault content ────
+// The T2 link-dict miner (link-dict.ts, synonyms v2) reads getFileCache().links.
+// This fake parses [[...]] from the raw content with one regex and mirrors the
+// shapes the REAL LinkCache carries (verified live 2026-08-08): `displayText`
+// is populated for EVERY link — a plain [[Note]] gets displayText === link —
+// and pipedness is only decidable from `original` containing '|', which is
+// exactly the rule the miner applies. Faked as data (link records), never as
+// behavior, per the harness's dividing line above.
+const FAKE_WIKILINK = /\[\[([^\]]+?)\]\]/g;
+function fakeFileCache(content: string | null): { links?: Array<{ link: string; displayText?: string; original: string }> } | null {
+    if (content === null) return null;
+    const links: Array<{ link: string; displayText?: string; original: string }> = [];
+    for (const m of content.matchAll(FAKE_WIKILINK)) {
+        const inner = m[1];
+        const bar = inner.indexOf('|');
+        const link = (bar === -1 ? inner : inner.slice(0, bar)).trim();
+        const displayText = (bar === -1 ? inner : inner.slice(bar + 1)).trim();
+        links.push({ link, displayText, original: m[0] });
+    }
+    return links.length > 0 ? { links } : {};
 }
 
 // ── fake embedder: deterministic + content-derived ──────────────────────────
@@ -125,6 +151,10 @@ export class Scenario {
     store = new IndexStore();
     embedder = fakeEmbedder();
     orch!: SearchOrchestrator;
+    // The orchestrator holds this by LIVE reference (exactly how the plugin
+    // shares its settings object), so a scenario can flip a valve mid-script —
+    // e.g. synonymsV2 — and the next search reads it, no re-boot needed.
+    settings = structuredClone(DEFAULT_SETTINGS);
 
     async boot(): Promise<void> {
         // Unique DB name per Scenario so tests don't share an origin-scoped
@@ -135,12 +165,16 @@ export class Scenario {
         await this.store.open(`scn-${Math.random().toString(36).slice(2)}`, 'seek-test');
         const app = {
             vault: this.vault,
-            metadataCache: { isUserIgnored: () => false },
+            metadataCache: {
+                isUserIgnored: () => false,
+                // T2 link-dict mining (synonyms v2) — see fakeFileCache above.
+                getFileCache: (f: TFile) => fakeFileCache(this.vault.contentOf(f.path)),
+            },
         } as unknown as App;
         // The orchestrator calls append / appendError / deviceId (grep-pinned).
         const logger = { deviceId: 'test', append: async () => {}, appendError: async () => {} } as never;
         // forensics=null, indexDir=null → sidecarOn() is false (no adapter writes).
-        this.orch = new SearchOrchestrator(app, this.store, this.embedder, logger, structuredClone(DEFAULT_SETTINGS));
+        this.orch = new SearchOrchestrator(app, this.store, this.embedder, logger, this.settings);
     }
 
     // The incremental catch-up the live handlers run: diff persisted vs live,

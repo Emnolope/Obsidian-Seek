@@ -88,6 +88,10 @@ describe('rank — recency ε-tiebreaker (2026-06-11, [[Seek Rel]] §Recency Pla
     // Dates relative to now: computeRecencyScore defaults referenceDateMs to
     // Date.now(), which is what ships — these tests exercise that path.
     const daysAgo = (d: number) => new Date(Date.now() - d * 86_400_000).toISOString();
+    // The shipped default is Off (ε=0), under which every assertion here would be
+    // vacuous — pin the Recency "Default" stage (settings-tab.ts RECENCY_VALUE)
+    // so these tests exercise the tiebreaker as a user who turns it on gets it.
+    const tiebreaker = { ...DEFAULT_RANKING_CONFIG, recencyEpsilon: 0.04, recencyHalfLifeDays: 180 };
 
     it('breaks an exact score tie newest-first (the dated-series case)', () => {
         // Two series siblings: identical dense + bm25 (the realistic near-tie:
@@ -96,20 +100,23 @@ describe('rank — recency ε-tiebreaker (2026-06-11, [[Seek Rel]] §Recency Pla
             chunk('Notes/Alex 1x1 2025-11-19.md', { created: daysAgo(204) }),
             chunk('Notes/Alex 1x1 2026-05-19.md', { created: daysAgo(23) }),
         ];
-        const { results } = rank(chunks, new Float64Array([0.8, 0.8]), new Float64Array([1, 1]), 'zz', 2, DEFAULT_RANKING_CONFIG);
+        const { results } = rank(chunks, new Float64Array([0.8, 0.8]), new Float64Array([1, 1]), 'zz', 2, tiebreaker);
         expect(results[0].note_path).toBe('Notes/Alex 1x1 2026-05-19.md');
     });
 
-    it('cannot flip a real score gap — ε is a tiebreaker, not a lean', () => {
+    it('cannot flip a real score gap at the Default stage — ε 0.04·180d is a tiebreaker, not a lean', () => {
         // The OLDER note is genuinely more relevant (dense 0.80 vs 0.70 → hybrid
-        // gap 0.04 at α=0.80, double the entire ε budget). The 06-04 click study:
-        // 50% of episodic clicks target an instance >90d old — newest must not
-        // override real relevance.
+        // gap 0.0425 at α=0.85, above the entire ε budget at the Recency
+        // "Default" stage). The 06-04 click study: 50% of episodic clicks target
+        // an instance >90d old — newest must not override real relevance.
+        // Pinned to the Default stage explicitly (the shipped default is Off,
+        // ε=0, under which this invariant would be vacuous); the High stage
+        // (0.1·90d) is a deliberate lean by design and DOES flip this gap.
         const chunks = [
             chunk('Notes/Older Better.md', { created: daysAgo(400) }),
             chunk('Notes/Newer Worse.md', { created: daysAgo(1) }),
         ];
-        const { results } = rank(chunks, new Float64Array([0.80, 0.70]), new Float64Array([0, 0]), 'zz', 2, DEFAULT_RANKING_CONFIG);
+        const { results } = rank(chunks, new Float64Array([0.80, 0.70]), new Float64Array([0, 0]), 'zz', 2, tiebreaker);
         expect(results[0].note_path).toBe('Notes/Older Better.md');
     });
 
@@ -119,8 +126,8 @@ describe('rank — recency ε-tiebreaker (2026-06-11, [[Seek Rel]] §Recency Pla
             chunk('Notes/EditedNew.md', { created: daysAgo(700), modified: daysAgo(2) }),
         ];
         const scores = { dense: new Float64Array([0.8, 0.8]), bm25: new Float64Array([1, 1]) };
-        const byCreated = rank(chunks, scores.dense, scores.bm25, 'zz', 2, DEFAULT_RANKING_CONFIG).results;
-        const byModified = rank(chunks, scores.dense, scores.bm25, 'zz', 2, { ...DEFAULT_RANKING_CONFIG, recencyKey: 'modified' }).results;
+        const byCreated = rank(chunks, scores.dense, scores.bm25, 'zz', 2, { ...tiebreaker, recencyKey: 'created' }).results;
+        const byModified = rank(chunks, scores.dense, scores.bm25, 'zz', 2, { ...tiebreaker, recencyKey: 'modified' }).results;
         expect(byCreated[0].note_path).toBe('Notes/CreatedNew.md');
         expect(byModified[0].note_path).toBe('Notes/EditedNew.md');
     });

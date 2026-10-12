@@ -2,7 +2,7 @@
 // resilience posture (corrupt records recover, unusable storage goes quiet).
 
 import { describe, it, expect } from 'vitest';
-import { pushRecent, removeRecent, RecentSearches, RECENTS_CAP } from './recents';
+import { pushRecent, removeRecent, nextRecentIndex, RecentSearches, RECENTS_CAP } from './recents';
 
 describe('pushRecent', () => {
     it('prepends the newest query', () => {
@@ -43,6 +43,28 @@ describe('removeRecent', () => {
 
     it('is a no-op when the query is absent', () => {
         expect(removeRecent(['a', 'b'], 'zzz')).toEqual(['a', 'b']);
+    });
+});
+
+describe('nextRecentIndex', () => {
+    it('enters from either end when nothing is highlighted', () => {
+        expect(nextRecentIndex(-1, 1, 3)).toBe(0);   // first ↓ → top
+        expect(nextRecentIndex(-1, -1, 3)).toBe(2);  // first ↑ → bottom
+    });
+
+    it('steps within the list', () => {
+        expect(nextRecentIndex(0, 1, 3)).toBe(1);
+        expect(nextRecentIndex(2, -1, 3)).toBe(1);
+    });
+
+    it('clamps at both ends without wrapping', () => {
+        expect(nextRecentIndex(0, -1, 3)).toBe(0);   // ↑ at top stays
+        expect(nextRecentIndex(2, 1, 3)).toBe(2);    // ↓ at bottom stays
+    });
+
+    it('stays at -1 for an empty list so the caller no-ops', () => {
+        expect(nextRecentIndex(-1, 1, 0)).toBe(-1);
+        expect(nextRecentIndex(-1, -1, 0)).toBe(-1);
     });
 });
 

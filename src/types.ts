@@ -59,7 +59,16 @@ export type Dtype = 'q4f16' | 'q4' | 'q8' | 'fp32';
 // rows still parse (they carry 'unknown' and nothing else).
 // v16 (issue #5): + delta-apply entry (incremental-patch outcome: fallback
 // reason, patch cost, mutex hold), + IndexCompleteEntry.paceWaitMs.
-export const LOG_SCHEMA_VERSION = 16;
+// v17: SearchEntry.hubGateFired / hubTopDegree — hub-routing telemetry.
+// RETIRED 2026-09-02 with the feature (parked OFF since 2026-08-08, never
+// harness-measured); the optional fields are gone from the type, rows that
+// carry them still parse.
+// v18: SearchEntry.specTriggered — specificity-boost telemetry.
+// RETIRED 2026-09-08 with the feature (GATE 2 never passed at any S on either
+// harness; on the fidelity-fixed harness the gold@1 delta is exactly 0 on every
+// real-usage set — it only reorders positions 2-10 downward). The optional field
+// is gone from the type, rows that carry it still parse.
+export const LOG_SCHEMA_VERSION = 18;
 
 // ---- chunk model ----
 
@@ -265,7 +274,8 @@ export interface SeekSettings {
     // date property (createdProp, with filename-date then mtime fallback) —
     // copy-proof and matches the dated-instance semantics episodic queries want,
     // but it assumes the vault carries such a property, so it's an explicit
-    // opt-in via the date-field picker, not the default. Applied per-search (no
+    // opt-in via the date-field picker, not the default. (Briefly the default on
+    // 2026-09-02, copied from the reference vault's own config; reverted.) Applied per-search (no
     // reindex, both dates are already in the index). [[Seek Rel]] §Recency Plan
     // 2026-06-11. (Replaces `recencyWeight`, the parked blend weight deleted
     // 2026-06-11 with the rest of the zombie recency machinery; a stale persisted
@@ -288,8 +298,10 @@ export interface SeekSettings {
     // Recency WEIGHT (ε): the magnitude of the additive recency term in
     // final = hybrid + ε·recency + titleBoost (ranker.ts). recency ∈ [0,1] from
     // the half-life decay below, so ε is literally the maximum score a
-    // brand-new note can gain. The shipped DEFAULT is now 0 — recency ships Off
-    // (2026-06-19 settings ratification). The Recency segmented control maps
+    // brand-new note can gain. The shipped DEFAULT is 0 — recency ships Off
+    // (2026-06-19 settings ratification; briefly 0.1·90d on 2026-09-02 when the
+    // defaults were aligned to a data.json that turned out to have High picked
+    // by accident — walked back the same day). The Recency segmented control maps
     // Off=0 / Default=0.04·180d / High=0.1·90d; the old 0.02 always-on tiebreaker
     // is retired. A non-zero ε ("Default"/"High") is a deliberate recency lean: raising it past
     // ~0.1 lets a fresh note leapfrog a moderately-better older one. CAUTION,
@@ -374,6 +386,21 @@ export interface SeekSettings {
     // posture: dictionary tokens run through the English analyzer. Dictionary
     // rebuilds with the BM25 cache (per dataGeneration); no reindex.
     synonymExpansion: boolean;
+
+    // EXPERIMENTAL, default OFF: synonyms v2 Stage 1 — T2 phrase-trigger
+    // expansion mined from the vault's own PIPED wikilink displays
+    // (link-dict.ts + synonyms.ts buildPhraseMap/matchPhrases). A piped link
+    // `[[Query Understanding|QU]]` declares a multi-word name ↔ short form the
+    // v1 single-token dictionary can't express (the alias-gap census
+    // 2026-07-23: multi-word aliases ARE the gap; QU ×70 in the reference
+    // vault). A 2–4-token phrase contained in the query injects its
+    // name-shaped single-token display mate at the v1 discount, crediting
+    // every phrase token's coverage slot. The valve gates the BUILD too: the
+    // dictionary is mined lazily on the first search with it on (setting or
+    // seek:search synv2=true), so the default install pays nothing.
+    // Hidden (no settings-tab control), same posture as synonymExpansion.
+    synonymsV2: boolean;
+
 
     // Searchable properties — index frontmatter property VALUES as a 6th BM25
     // field (boost 2.0, bm25.ts) so plain query words match structured
@@ -498,6 +525,15 @@ export interface SeekSettings {
     // presentation; applies to the next time the search modal opens.
     altOpenLocation: AltOpenLocation;
 
+    // Hidden: re-broadcast settled searches + result-opens (query, shown results
+    // with snippets, click rank/dwell) on the workspace event bus as
+    // 'seek:search' / 'seek:result-open', for a companion logger plugin (main.ts
+    // emitSeekSearch). Any installed plugin can subscribe, so the public build
+    // ships it OFF: the prototype default below is rewritten to false by a
+    // promote.config.mjs substitution, and the deny-list fails the promotion
+    // closed if the ON default ever survives. No settings-tab control.
+    searchEventRelay: boolean;
+
 
     // NOTE: the compute backend (WebGPU vs WASM) is deliberately NOT a setting.
     // It is a property of the DEVICE, not the vault, and data.json syncs across
@@ -576,13 +612,14 @@ export type SidecarIndexLocation = 'config' | 'visible';
 export const DEFAULT_SETTINGS: SeekSettings = {
     denseWeight: 0.85,         // BOUND-NORM scale dense weight; mirrors DEFAULT_RANKING_CONFIG.alpha. Raised 0.80→0.85 (2026-06-27 re-eval): de-franken made BM25 more assertive, so a fixed α=0.80 over-weighted lexical; 0.85 is a cross-corpus win (Example Vault flat-to-+, BEIR +0.01–0.02). Migrated via rev 8. (NOT the 0.92 empirical-max point)
     navTitleBoost: 0.5,        // Title-bonus "Default" stage (segmented 0=Off / 0.5=Default / 0.8=High); softened from the 0.8 swept knee per the 2026-06-19 settings ratification — see field comment
-    recencyKey: 'modified',    // global definition of "recent" (ε-tiebreaker + recency arm + browse sort + before:/after:); mtime is the only universally-present date → the generic default; 'created' (a frontmatter date prop, see createdProp) is an opt-in for true creation-recency
+    recencyKey: 'modified',    // global definition of "recent" (ε-tiebreaker + recency arm + browse sort + before:/after:); mtime is the only universally-present date → the generic default; 'created' (a frontmatter date prop, see createdProp) is an opt-in. Briefly 'created' 2026-09-02 → reverted: that was the reference vault's own convention, not a generic default
     createdProp: 'created',    // frontmatter property holding the creation date (vault convention; falls back to filename date, then mtime)
     recencyEpsilon: 0,         // ships Off (Recency segmented Off=ε0 / Default=ε0.04·180d / High=ε0.1·90d); was a 0.02 tiebreaker pre-2026-06-19 ratification — additive ε in final = hybrid + ε·recency + titleBoost (see field comment)
     recencyHalfLifeDays: 180,  // recency decay HALF-LIFE in days (0.5^(daysOld/HL)); 180 = 06-04 operating point. Do NOT shorten to 7–30: it hijacks flat no-opinion pools (see the field comment above — that advice was measured wrong and reversed 2026-07-16). The Recency High stage is the supported lean, at 90.
     fuzzyEnabled: true,        // typo tolerance ON by default (edit dist scales by term length, ≤3 exact; see bm25.ts FUZZY_BY_LENGTH); +3–4/40 gold@1 on typo'd entity queries, ns cost on clean
     prefixLastToken: true,     // last-token prefix expansion ON by default; +0.0064 personal nDCG, stress sets clean; see field comment
     synonymExpansion: true,    // ON (hidden) per the 2026-06-19 ratification; alias-dictionary query expansion (Lr↔Lightroom); BM25-dict refit, no reindex — see field comment
+    synonymsV2: false,         // OFF: Stage-1 phrase-trigger expansion from piped-link displays; dictionary still builds (valve gates consumption only). New key, no migration: Object.assign backfills — see field comment
     searchableProperties: true, // frontmatter values as a BM25 field; ON as of 2026-06-25 — My-Vault channel eval measured +0.05 nDCG@10 (place-note recall: austin 22→3, zurich 33→7; combo_eval). Migrated on via rev 7; see field comment
     headingsField: true,       // ON (hidden) per the 2026-06-19 ratification; heading path as a BM25 field; BM25 refit, no reindex — see field comment
     boostedBm25: false,        // "Boosted BM25" preset (aliases 9 / tags 2 / headings 4); OFF — opt-in field-weight lever, implies heading indexing; see field comment
@@ -594,9 +631,10 @@ export const DEFAULT_SETTINGS: SeekSettings = {
     redactReport: true,        // ON: salted tokens for paths/titles/queries in the generated report — the share-safe default for a file made to be pasted into a public issue; see field comment
     showHotkeyHints: true,     // ON: show the modal footer keyboard-hint bar + result counter; OFF = full-results-only modal
     altOpenLocation: 'tab',    // ⌘/Ctrl open target (tab/split/window); 'tab' preserves the historical background-new-tab fan-out. New key, no migration: Object.assign backfills
+    searchEventRelay: false,   // OFF (hidden): workspace-event relay for a companion logger plugin; set true in data.json to enable — see field comment
     sidecarEnabled: true,      // ON (hidden) per the 2026-06-19 ratification; vault-file index persistence for iOS-eviction survival + cross-device sync; only Index location stays user-facing; seeds on next reindex — see field comment
     sidecarIndexLocation: 'config', // hidden literal '.obsidian/plugins/seek/index'; 'visible' = vault-root 'Seek Index/' for split-config Obsidian Sync; see field comment
-    settingsRev: 9,            // current schema rev; bump alongside a migration in main.ts onload (rev 9 = 2026-07-16 Recency High half-life 270→90)
+    settingsRev: 11,           // current schema rev; bump alongside a migration in main.ts onload (rev 11 = 2026-09-08 specificity-boost removal drops the orphan specificityBoost key)
 };
 
 // One-time settings migrations, keyed on the persisted settingsRev. Applied to the
@@ -676,11 +714,22 @@ export function migrateSettings(raw: Partial<SeekSettings>): Partial<SeekSetting
     // able and gets moved — same accepted trade as rev 7. Score-time only: no reindex, no
     // BM25 refit (the half-life is applied at fusion).
     if (fromRev < 9 && raw.recencyHalfLifeDays === 270) raw.recencyHalfLifeDays = 90;
+    // Rev 10 (2026-09-02 hub-routing removal): the feature (fusion.ts hubDegreeBoost,
+    // parked OFF since 2026-08-08 and never harness-measured) is deleted outright, so
+    // the persisted `hubBonus` key is an orphan Object.assign would carry forever.
+    // Drop it. The same commit moved the recencyKey default 'modified' → 'created'
+    // (since reverted to 'modified') — deliberately NOT migrated either way:a default only reaches an install that never
+    // persisted the key; an existing pick (either key, any recency stage) is the
+    // user's and survives.
+    if (fromRev < 10) delete (raw as { hubBonus?: number }).hubBonus;
+    // rev 11 — same shape for the specificity boost: the feature is gone, so the
+    // persisted S is an orphan key that would otherwise sit in data.json forever.
+    if (fromRev < 11) delete (raw as { specificityBoost?: number }).specificityBoost;
     // Never DOWNGRADE the stamp: a data.json synced from a device running a newer
-    // Seek (rev 10+) must keep its rev, or this older build stamps it back to 9 and
+    // Seek (rev 12+) must keep its rev, or this older build stamps it back to 11 and
     // the newer device re-runs its migrations on next load (conditional default
     // moves misfire on second application).
-    raw.settingsRev = Math.max(fromRev, 9);
+    raw.settingsRev = Math.max(fromRev, 11);
     return raw;
 }
 
@@ -976,6 +1025,15 @@ export interface IndexCompleteEntry {
     // 92.8 s wall was invisible until this split pace-wait out of embed time.
     paceWaitMs?: number;
     pass: boolean;
+    // Manual pause (design B): the user paused a FULL reindex mid-run. The pass
+    // committed every file it had started (per-file durable) and returned cleanly
+    // with the store left OPEN — the un-started files stay record-less, so
+    // computeDelta reports them dirty and the resume catch-up embeds exactly those
+    // (an unchanged committed file has a matching content hash and is never
+    // re-embedded). A paused pass is NOT a completed full index: getIndexStats
+    // excludes it from lastFullAt so the status card never claims coverage the
+    // partial index doesn't have. Absent (falsy) on every ordinary pass.
+    paused?: boolean;
     checks: string[];
 }
 
@@ -1104,6 +1162,14 @@ export interface SearchEntry {
     // Whether alias-dictionary synonym expansion was applied this search.
     // Optional so logs predating the lever still parse; absent ⇒ false.
     synonymExpansion?: boolean;
+    // Whether the synonyms-v2 valve (phrase-trigger expansion) was on this
+    // search — settings.synonymsV2 or the CLI synv2 override. Absent ⇒ off.
+    synonymsV2?: boolean;
+    // How many phrase-trigger mates matchPhrases fired for this query.
+    // Written only when synonymsV2 is on, so a 0 means "valve on, dictionary
+    // empty or no phrase in the query" — distinguishable from valve-off
+    // (absent), the diagnostic the metadataCache warm-up gap needs.
+    phraseMatesFired?: number;
     // Whether frontmatter properties were indexed as a BM25 field this search.
     // Optional so logs predating the lever (2026-06-11) still parse; absent ⇒ false.
     searchableProperties?: boolean;
