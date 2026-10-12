@@ -47,6 +47,11 @@ import { nextFlushDelay } from './flush-schedule';
 import { TaskContextTracker, type TaskContext } from './task-context';
 import type { LongTaskEntry, MemoryPressureEntry, StorageSnapshotEntry, EvictionSuspectedEntry, AppLocalFetchEntry } from './types';
 
+// Ribbon action tooltip. Part of the ribbon item's persisted id
+// (`<pluginId>:<title>`) — renaming it silently resets every user's
+// quick-access pick and hide/reorder state for the icon. Never change it.
+export const RIBBON_TITLE = 'Seek search';
+
 // Long-task threshold. PerformanceObserver fires for any task ≥50 ms by spec,
 // but at that floor we'd flood the log. 250 ms is the rough threshold above
 // which the user perceives a stutter and is also the design-doc latency
@@ -349,6 +354,17 @@ export default class SeekPlugin extends Plugin {
     }
 
     async onload() {
+        // Ribbon action (issue #9). Registered FIRST, before any await: on phones
+        // the navbar's "Quick access ribbon item" (vault config
+        // mobileQuickRibbonItem) is resolved against the ribbon list once, at
+        // layout-ready, so an icon added after onload's awaits can come up missing
+        // on a slow start. The item id is `<pluginId>:<title>`, and Obsidian keys
+        // the quick-access pick and the hide/reorder state on it, so the title
+        // must never change. Guarded by main-ribbon.test.ts.
+        this.addRibbonIcon('search', RIBBON_TITLE, () => {
+            if (!this.orchestrator) { new Notice('Seek: still loading — try again in a moment'); return; }
+            this.openSearchModal();
+        });
         this.logger = new SeekLogger(this.app, this.manifest.id);
         // Sweep any pre-existing root-level seek-log/init/captures files into the
         // hidden LOG_DIR next to the index, THEN tail-truncate this device's log if it

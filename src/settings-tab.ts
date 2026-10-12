@@ -47,7 +47,7 @@ function backendLine(backend: Device | null): string {
 }
 
 // Real repo/social URLs for the About footer.
-const GITHUB_URL = 'https://github.com/tooape/Obsidian-Seek-prototype';
+const GITHUB_URL = 'https://github.com/ryan-manor/Obsidian-Seek';
 const X_URL = 'https://x.com/tooape';
 const DOCS_URL = 'https://publish.obsidian.md/rmm/Seek+Documentation/About+Seek';
 
