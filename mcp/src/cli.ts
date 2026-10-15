@@ -7,7 +7,7 @@ const usage = `Usage:
   seek-mcp status <vaultDir> [--json]
   seek-mcp embed <query> [--json]
   seek-mcp search <vaultDir> <query> [--top-k N] [--path-prefix PREFIX] [--vectors] [--json]
-  seek-mcp search <vaultDir> --vector <comma-separated values> [--top-k N] [--path-prefix PREFIX] [--json]
+  seek-mcp search <vaultDir> --vector <comma-separated values> [--top-k N] [--path-prefix PREFIX] [--vectors] [--json]
   seek-mcp chunk <vaultDir> <chunkId> [--vectors] [--json]
   seek-mcp note <vaultDir> <notePath> [--vectors] [--json]
 `;

@@ -63,3 +63,12 @@ test('vector-only search is exact cosine, and vectors are returned on request', 
   assert.equal(index.note('one.md', true)[0].vector!.length, 384);
   assert.ok(!('vector' in index.chunk('a')));
 });
+
+test('output shape: hits carry mtime; fetches carry neither meta nor vectors unless asked', async () => {
+  const index = await SeekIndex.load(await fixture());
+  const [hit] = await index.search({ vector: [1, 0, ...new Array(382).fill(0)], topK: 1 });
+  assert.equal(hit.mtime, 1);
+  const chunk = index.chunk('a');
+  assert.ok(!('meta' in chunk) && !('vector' in chunk) && !('q' in chunk));
+  assert.equal(chunk.mtime, 1);
+});

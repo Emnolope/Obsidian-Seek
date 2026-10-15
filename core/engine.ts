@@ -53,6 +53,10 @@ async function hydrateBodies(host: SearchHost, results: ScoredChunk[]): Promise<
     for (let i = 0; i < results.length; i++) results[i].content = bodies[i] ?? '';
 }
 
+// Pick top-K chunks by recency descending, keyed on the vault's recencyKey setting through the SHARED recencyDate accessor (fusion.ts), the same source
+// the ranker's ε-tiebreaker and browseOrder read, so the candidate ARM admits the same notes the scorer rewards. (The 06-07 lesson: a key change applied
+// to the scorer but not the arm pulls in candidates the ranker then scores as old.) Skips chunks with no parseable date: this arm is additive recall
+// coverage, unlike browseOrder, which must keep every matched chunk.
 function topByRecency(settings: SeekSettings, chunks: ChunkMeta[], k: number, mask?: boolean[] | null): number[] {
     // NaN marks ineligible (masked out or undated) so selectTopNIndices skips it without building per-chunk objects.
     const n = chunks.length;

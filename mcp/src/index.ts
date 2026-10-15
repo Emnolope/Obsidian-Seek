@@ -21,6 +21,7 @@ export interface SearchHit {
   notePath: string;
   title: string;
   chunkIndex: number;
+  mtime: number;
   snippet: string;
   content: string;
   score: number;
@@ -28,7 +29,7 @@ export interface SearchHit {
   vector?: number[];
 }
 
-export type FetchedChunk = ExportDocument & { vector?: number[] };
+export type FetchedChunk = Omit<ExportDocument, 'meta'> & { vector?: number[] };
 
 export interface SearchQuery {
   text?: string;
@@ -151,6 +152,7 @@ export class SeekIndex {
       return {
         chunkId: r.chunk_id, notePath: r.note_path, title: r.title,
         chunkIndex: doc?.chunkIndex ?? 0,
+        mtime: doc?.mtime ?? 0,
         snippet: r.snippet ?? '', content: r.content, score: r.score,
         signals: r.ranking_signals as unknown as Record<string, number>,
         ...(query.includeVectors && doc ? { vector: this.vectorOf(doc) } : {}),
@@ -179,7 +181,8 @@ export class SeekIndex {
   }
 
   private out(d: DocumentRecord, withVector: boolean): FetchedChunk {
-    const { q: _q, s: _s, ...rest } = d;
+    // meta (the ranker's input) is dropped: it's internal plumbing, not part of what a fetch has ever returned.
+    const { q: _q, s: _s, meta: _meta, ...rest } = d;
     return withVector ? { ...rest, vector: this.vectorOf(d) } : rest;
   }
 }
