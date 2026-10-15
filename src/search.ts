@@ -43,6 +43,7 @@ import { parseQuery, compileMatcher, excludedNotePaths } from './query-parser';
 import { buildPassageTerms, passageWindow, type PassageTerm } from './passage';
 import { enumerateNumberPropertyNames } from './prop-types';
 import { exportMcpIndex } from './mcp-export';
+import { shouldIndexByRules, chunksFor as chunksForCore, computeDelta, UnreadableQuarantine } from '../core/delta';
 import { runSearch, type SearchHost, type RecencyOverride } from '../core/engine';
 import { alignCandidate, buildResidentRerankBlock, chunkMetaEqual, pushDeltaAdds, freshDeltaAdds, appendFrameRows, tombstoneFrameRows, buildSelectionMask, COMPACTION_TOMBSTONE_FRACTION, COHERENCE_SAMPLES, COHERENCE_DRIFT_COOLDOWN_MS, coherenceDriftDecision, shouldDiscardPartialFrame, driftRecoveryDecision, frameBm25Coherent, buildBm25Stamp, bm25StampMatches, dedupByPath, topKByScore, snippetPlainText, makeSnippet, type ResidentFrame, type DeltaAdd, type DriftRecoveryState, type RowSpaceProbe, type Bm25PersistStamp } from '../core/search-helpers';
 export { alignCandidate, buildResidentRerankBlock, chunkMetaEqual, pushDeltaAdds, freshDeltaAdds, appendFrameRows, tombstoneFrameRows, buildSelectionMask, COMPACTION_TOMBSTONE_FRACTION, COHERENCE_SAMPLES, COHERENCE_DRIFT_COOLDOWN_MS, coherenceDriftDecision, shouldDiscardPartialFrame, driftRecoveryDecision, frameBm25Coherent, buildBm25Stamp, bm25StampMatches } from '../core/search-helpers';
@@ -137,25 +138,7 @@ const QUOTA_NOTICE_MIN_INTERVAL_MS = 5 * 60_000;
 // chunk count; at our current ~5k scale it returns exactly the old constants, so
 // behaviour is identical until the vault grows past POOL_ANCHOR_N.
 
-// Vault-root files that are machine-generated and would otherwise pollute
-// the index with constant-touch recency. The mtime on these files moves
-// every time the plugin writes, which means recency=~1.0 → +0.25 lift on
-// every fused score, drowning out actual content matches.
-//
-// This is a v0 hardcoded list rather than a settings string because we
-// have zero admin console in v0. Anything that turns into a recurring
-// "where did my note go" complaint should be added here.
-const EXCLUDED_PATHS = new Set([
-    'seek-report.md',
-    'seek-report.json',
-    'spike-report.md',
-]);
-const EXCLUDED_PREFIXES = [
-    // Future-proofing: if someone runs multiple spike variants, the
-    // generated reports tend to share these stems.
-    'spike-init',
-    'seek-init',
-];
+// EXCLUDED_PATHS / EXCLUDED_PREFIXES and the membership rules live in core/delta.ts.
 
 // Honor Obsidian's user-configured "Excluded files" (Settings → Files & Links).
 // A user who hid a folder from Obsidian's own search/link suggestions expects
@@ -191,10 +174,7 @@ function isUserIgnored(app: App, path: string): boolean {
 // SearchOrchestrator.shouldIndex delegates here so there is exactly one
 // implementation to keep in sync (see the audit note in suggest.ts).
 export function shouldIndexPath(app: App, settings: SeekSettings, path: string): boolean {
-    if (EXCLUDED_PATHS.has(path)) return false;
-    if (EXCLUDED_PREFIXES.some(p => path.startsWith(p))) return false;
-    if (settings.honorIgnoredFolders && isUserIgnored(app, path)) return false;
-    return true;
+    return shouldIndexByRules(settings, path, p => isUserIgnored(app, p));
 }
 
 // Per-call recency override for search() — the seek:search CLI's
@@ -264,8 +244,7 @@ export class SearchOrchestrator {
     // which wedges reconcileIdentityInPlace in 'drained' permanently (see there).
     // Quarantining it lets computeDelta skip it until the backoff elapses, and a
     // full reindex (reindexAllInner) clears the map so it is always retried then.
-    private static readonly UNREADABLE_QUARANTINE_MS = 30 * 60 * 1000; // 30 min
-    private unreadableQuarantine = new Map<string, number>();
+    private unreadable = new UnreadableQuarantine();
 
     // Last time the "storage full" Notice was shown (epoch ms). Rate-limits the
     // toast across passes (see QUOTA_NOTICE_MIN_INTERVAL_MS); the check line +
@@ -279,16 +258,13 @@ export class SearchOrchestrator {
     private readonly deltaFallbackCounts = new Map<string, number>();
 
     private isQuarantined(path: string): boolean {
-        const until = this.unreadableQuarantine.get(path);
-        return until !== undefined && Date.now() < until;
+        return this.unreadable.has(path);
     }
 
     // Called wherever an indexable file's content could not be read. Logs once
     // per quarantine spell (not on every retry) so a wedged file doesn't spam.
     private quarantineUnreadable(path: string): void {
-        const isNew = !this.unreadableQuarantine.has(path);
-        this.unreadableQuarantine.set(path, Date.now() + SearchOrchestrator.UNREADABLE_QUARANTINE_MS);
-        if (isNew) console.warn(`[seek] quarantining persistently unreadable file (will retry on backoff / next full reindex): ${path}`);
+        if (this.unreadable.add(path)) console.warn(`[seek] quarantining persistently unreadable file (will retry on backoff / next full reindex): ${path}`);
     }
 
     constructor(app: App, store: IndexStore, embedder: LocalEmbedder, logger: SeekLogger, settings: SeekSettings, forensics: Forensics | null = null, indexDir: string | null = null, taskCtx: TaskContextTracker | null = null) {
@@ -516,7 +492,7 @@ export class SearchOrchestrator {
         // A full reindex re-attempts every file regardless of quarantine — clear
         // the backoff map so a file that has since become readable (e.g. an
         // iCloud placeholder that finished downloading) isn't skipped here too.
-        this.unreadableQuarantine.clear();
+        this.unreadable.clear();
 
         // Reset. Close our long-lived connection first so deleteDatabase
         // isn't blocked by us, then re-open the (fresh, empty) DB.
@@ -1589,10 +1565,7 @@ export class SearchOrchestrator {
     // base chunk's id is identical wherever it is re-derived. `modifiedIso` matches
     // the chunker's `modified` param contract.
     private chunksFor(content: string, path: string, modifiedIso: string | null): Chunk[] {
-        if (path.endsWith('.base')) {
-            return this.chunker.chunkBase(extractBaseDocs(content, path), path, modifiedIso);
-        }
-        return this.chunker.chunkContent(content, path, undefined, modifiedIso);
+        return chunksForCore(this.chunker, extractBaseDocs, content, path, modifiedIso);
     }
 
     // Diff the persisted index against the live vault — the authoritative,
@@ -1602,46 +1575,14 @@ export class SearchOrchestrator {
     // longer indexable (moved into an ignored folder, or honor-ignored toggled on)
     // — a single "not in the live indexable set" test covers both.
     async computeDelta(): Promise<{ dirty: string[]; deleted: string[] }> {
-        const records = await this.store.listFileRecords();
-        const stored = new Map<string, FileRecord>();
-        for (const r of records) stored.set(r.note_path, r);
-
-        const live = this.indexableFiles().filter(f => this.shouldIndex(f.path));
-        const livePaths = new Set(live.map(f => f.path));
-
-        // mtime advanced ≠ edited. An iCloud / Drive sync re-stamps a synced
-        // file's mtime without changing a byte — on iOS that fires every couple
-        // seconds, and keyed on mtime alone it re-embeds identical content
-        // forever (each embed blocks the mobile main thread → 1 fps, and the
-        // churn drives the jetsam crash-loop). classifyFileDelta confirms the
-        // bytes actually changed via the stored content hash before flagging
-        // dirty; we only pay the read+hash ('check-bytes') for files whose mtime
-        // moved, and the hash is a sync ~5 µs cyrb53, never the embedder, so it
-        // can't itself jank the UI.
-        const dirty: string[] = [];
-        for (const f of live) {
-            // A persistently-unreadable file (quarantineUnreadable) is excluded
-            // from dirty entirely while its backoff is live — otherwise its
-            // dropped record makes classifyFileDelta report 'dirty' forever (see
-            // the quarantine field comment), wedging every computeDelta caller.
-            if (this.isQuarantined(f.path)) continue;
-            const prev = stored.get(f.path);
-            let decision = classifyFileDelta(prev, f.stat.mtime, undefined, PLUGIN_VERSION);
-            if (decision === 'check-bytes') {
-                try {
-                    decision = classifyFileDelta(prev, f.stat.mtime, cyrb53Hex(await this.app.vault.cachedRead(f)), PLUGIN_VERSION);
-                } catch {
-                    decision = 'dirty';   // unreadable → let the embed path decide
-                    this.quarantineUnreadable(f.path); // give it this one attempt, then back off
-                }
-            }
-            if (decision === 'dirty') dirty.push(f.path);
-        }
-        const deleted: string[] = [];
-        for (const path of stored.keys()) {
-            if (!livePaths.has(path)) deleted.push(path);
-        }
-        return { dirty, deleted };
+        return computeDelta<TFile>({
+            records: () => this.store.listFileRecords(),
+            liveFiles: () => this.indexableFiles().filter(f => this.shouldIndex(f.path)).map(f => ({ path: f.path, mtime: f.stat.mtime, handle: f })),
+            read: f => this.app.vault.cachedRead(f.handle),
+            quarantine: this.unreadable,
+            onQuarantined: path => console.warn(`[seek] quarantining persistently unreadable file (will retry on backoff / next full reindex): ${path}`),
+            pluginVersion: PLUGIN_VERSION,
+        });
     }
 
     // ── Heal a version-mismatched index WITHOUT a full re-embed, when it is provably
