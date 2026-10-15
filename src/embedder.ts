@@ -113,7 +113,8 @@ export const MODEL_REVISION = ACTIVE_MODEL_SPEC.revision;
 // by construction — the drift checks (main.ts warnOnModelIndexDrift, the
 // search.ts incremental guard) read this constant to classify an unstamped
 // index as foreign and route the user to a full reindex.
-export const LEGACY_ENGLISH_MODEL_ID = 'onnx-community/granite-embedding-small-english-r2-ONNX';
+// Defined in core/contract.ts (the shared contract); re-exported for existing imports.
+export { LEGACY_ENGLISH_MODEL_ID } from '../core/contract';
 
 // ── Phase-5 local-model test override (vocab-trim grafted model) ─────
 // When enabled, Seek loads the LOCAL trimmed+fused ONNX from the vault

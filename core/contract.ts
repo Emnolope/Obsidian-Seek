@@ -11,3 +11,6 @@ export const EMBEDDING_DIM = 384;
 export const SIDECAR_FORMAT = 3;
 
 export const EXPORT_SCHEMA_VERSION = 1;
+
+// Indexes written before the modelId stamp existed were english-r2 by construction; drift checks use this to flag them as foreign.
+export const LEGACY_ENGLISH_MODEL_ID = 'onnx-community/granite-embedding-small-english-r2-ONNX';
