@@ -172,10 +172,11 @@ export class VecReservoir {
     readonly sample: Float32Array[] = [];
     private seen = 0;
 
-    constructor(
-        private readonly cap: number,
-        private readonly rand: () => number = Math.random,
-    ) {}
+    private readonly cap: number;
+    private readonly rand: () => number;
+
+    // Explicit fields, not parameter properties: core/ must run under node's strip-only TS mode.
+    constructor(cap: number, rand: () => number = Math.random) { this.cap = cap; this.rand = rand; }
 
     add(v: Float32Array): void {
         this.seen++;

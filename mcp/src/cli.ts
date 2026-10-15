@@ -111,8 +111,7 @@ async function run(args: Arguments): Promise<void> {
     const queryVector = args.options.get('vector') ? parseVector(args.options.get('vector')!) : undefined;
     const queryText = queryVector ? undefined : [value, ...args.positional.slice(1)].join(' ');
     if (!queryVector && !queryText) throw new Error('search requires a query or --vector');
-    const vector = queryVector ?? Array.from(await queryEmbedder.embed(queryText!));
-    const hits = index.search(vector, topK, args.options.get('path-prefix'));
+    const hits = await index.search({ text: queryText, vector: queryVector, embed: t => queryEmbedder.embed(t), topK, pathPrefix: args.options.get('path-prefix') });
     print(args.json ? hits : hits.map((hit, hitIndex) => `#${hitIndex + 1} ${hit.score.toFixed(4)}\n${formatDocument(hit)}`).join('\n\n'), args.json);
     return;
   }

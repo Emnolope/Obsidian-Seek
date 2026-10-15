@@ -65,9 +65,9 @@
 //      part is still exact-recounted by the verify loop (under the gate by
 //      then, since its count must land ≤ budget to be emitted).
 
-import type { Chunk } from './types';
-import { chunkIdFor } from './chunker';
-import { parseAtoms, type Atom } from './atoms';
+import type { Chunk } from './types.ts';
+import { chunkIdFor } from './chunker.ts';
+import { parseAtoms, type Atom } from './atoms.ts';
 
 // Batch token counter — exact counts, specials included, same tokenizer the
 // forward pass uses. In production this is LocalEmbedder.tokenCounts (iframe

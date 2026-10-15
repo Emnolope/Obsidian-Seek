@@ -39,9 +39,9 @@ import MiniSearch, { type Options } from 'minisearch';
 declare const __SEEK_ANALYZER_VERSION__: string;
 export const ANALYZER_VERSION: string =
     typeof __SEEK_ANALYZER_VERSION__ !== 'undefined' ? __SEEK_ANALYZER_VERSION__ : 'dev';
-import type { ChunkMeta } from './chunker';
-import { seekTokenize, hasCjk } from './tokenize';
-import { toDisplayForm } from './prop-normalize';
+import type { ChunkMeta } from './chunker.ts';
+import { seekTokenize, hasCjk } from './tokenize.ts';
+import { toDisplayForm } from './prop-normalize.ts';
 
 // Per-field BM25 term-frequency multipliers. Eval-tuned 2026-06-08 on the
 // 482-q old-log personal eval (with the coverage navigational boost active):

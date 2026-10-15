@@ -24,8 +24,8 @@
 // with it (see tokenize.ts, camelCase split). The sentence segmenter is a
 // forward character scan for the same reason.
 
-import { processQueryTerm, depluralize, foldDiacritics } from './bm25';
-import { seekTokenize } from './tokenize';
+import { processQueryTerm, depluralize, foldDiacritics } from './bm25.ts';
+import { seekTokenize } from './tokenize.ts';
 
 const K1 = 1.2;
 const B = 0.75;

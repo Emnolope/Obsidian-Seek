@@ -39,21 +39,21 @@
 // (`-#tag`, `-"phrase"`, `-(a b)`, `-path:`), `file:`, phrase "…", boolean OR /
 // grouping, `match-case:`, line/block/section/task, `/regex/`.
 
-import type { ChunkMeta, QueryFilters, FilterContext, RecencyKeyChoice } from './types';
-import { parseDateMs } from './fusion';
-import { toBindForm } from './prop-normalize';
+import type { ChunkMeta, QueryFilters, FilterContext, RecencyKeyChoice } from './types.ts';
+import { parseDateMs } from './fusion.ts';
+import { toBindForm } from './prop-normalize.ts';
 
 // Shared query-side tokenizer for `-term` negation (see tokenizeForMatch
 // below): the same seekTokenize + processQueryTerm pipeline BM25 itself uses
 // to process a query (bm25.ts distinctQueryTerms), not an ad-hoc duplicate.
-import { seekTokenize } from './tokenize';
-import { processQueryTerm } from './bm25';
+import { seekTokenize } from './tokenize.ts';
+import { processQueryTerm } from './bm25.ts';
 
 // Tag/property-key character grammar — SHARED with the doc-side inline-tag
 // scanner (tag-grammar.ts, where the full derivation comment lives): both
 // sides binding the same characters is what keeps a suggested/typed `#tag`
 // filter able to match what the chunker extracted (audit R2 #2).
-import { TAG_CH, TAG_RUN } from './tag-grammar';
+import { TAG_CH, TAG_RUN } from './tag-grammar.ts';
 
 // Ported from search.py:25-30, then widened to Obsidian's full grammar.
 // Alternatives are tried left-to-right at each position, so the bracket and

@@ -1,10 +1,10 @@
 // Search helpers lifted out of search.ts: stage-2 alignment, resident-frame row bookkeeping,
 // drift/coherence decisions, BM25 persistence stamp, snippet shaping. All pure, so the MCP side ranks and renders exactly like the plugin.
-import type { ChunkMeta, Chunk, ScoredChunk, SeekSettings } from './types';
-import { ANALYZER_VERSION } from './bm25';
-import { LEGACY_ENGLISH_MODEL_ID } from './contract';
-import type { QuantVec } from './quant';
-import { passageWindow, type PassageTerm } from './passage';
+import type { ChunkMeta, Chunk, ScoredChunk, SeekSettings } from './types.ts';
+import { ANALYZER_VERSION } from './bm25.ts';
+import { LEGACY_ENGLISH_MODEL_ID } from './contract.ts';
+import type { QuantVec } from './quant.ts';
+import { passageWindow, type PassageTerm } from './passage.ts';
 
 // Assemble the resident int8 rerank block for a frame. For each chunk_id in
 // `orderedIds` (frame row order, already orphan-filtered by ensureFrame), copy

@@ -46,7 +46,8 @@ export class TaskContextTracker {
     private spans: Span[] = [];
     // Injectable clock for tests; production uses performance.now() so spans
     // share the longtask entries' timebase.
-    constructor(private readonly now: () => number = () => performance.now()) {}
+    private readonly now: () => number;
+    constructor(now: () => number = () => performance.now()) { this.now = now; }
 
     push(c: TaskContext): void {
         this.prune();

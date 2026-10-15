@@ -10,7 +10,8 @@ export const EMBEDDING_DIM = 384;
 // sidecars are refused by metaAccepts and re-hydrated on the next full reindex.
 export const SIDECAR_FORMAT = 3;
 
-export const EXPORT_SCHEMA_VERSION = 1;
+// 1→2: documents carry the full ChunkMeta so the MCP side can run the same filters/ranking as the plugin.
+export const EXPORT_SCHEMA_VERSION = 2;
 
 // Indexes written before the modelId stamp existed were english-r2 by construction; drift checks use this to flag them as foreign.
 export const LEGACY_ENGLISH_MODEL_ID = 'onnx-community/granite-embedding-small-english-r2-ONNX';

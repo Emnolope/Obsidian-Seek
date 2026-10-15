@@ -6,7 +6,7 @@
 // them) while the matcher store only ever saw frontmatter tags, so every such
 // pill hard-excluded the notes it came from.
 
-import { parseAtoms } from './atoms';
+import { parseAtoms } from './atoms.ts';
 
 // One character allowed inside an Obsidian tag or property key: any NON-delimiter.
 // Mirrors Obsidian's own tag grammar (https://obsidian.md/help/tags) — which is

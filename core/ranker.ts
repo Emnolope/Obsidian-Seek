@@ -16,8 +16,8 @@
 // normalization (fusion.ts) fixes it constant-free while improving aggregate
 // nDCG. The gate is deleted; see [[seek-empty-stub-dense-pollution]].
 
-import type { ChunkMeta, ScoredChunk, RecencyKeyChoice } from './types';
-import { theoreticalNormDense, theoreticalNormBm25, hybridFusion, computeRecencyScore, recencyDate, titleMatchBoost } from './fusion';
+import type { ChunkMeta, ScoredChunk, RecencyKeyChoice } from './types.ts';
+import { theoreticalNormDense, theoreticalNormBm25, hybridFusion, computeRecencyScore, recencyDate, titleMatchBoost } from './fusion.ts';
 
 // (BlendMode deleted 2026-06-11: the opt-in 'rrf' mode is gone — linear TM2C2
 // is the only fusion. RRF lost the head-to-heads and discards score magnitude;

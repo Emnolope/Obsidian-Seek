@@ -18,7 +18,7 @@
 //     once gen > N). The sole bump site is bumpGeneration(), called from
 //     SearchOrchestrator.invalidateBm25Cache().
 
-import type { SeekSettings } from './types';
+import type { SeekSettings } from './types.ts';
 
 export class IndexCoordinator {
     private writeLock: Promise<unknown> = Promise.resolve();

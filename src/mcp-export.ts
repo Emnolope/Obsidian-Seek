@@ -36,6 +36,7 @@ export async function exportMcpIndex(adapter: DataAdapter, store: IndexStore): P
             content,
             chunkIndex: location.index,
             mtime: location.file.mtimeMs,
+            meta: chunkMeta,
         });
     }
     const generation = `${Date.now()}-${documents.length}`;

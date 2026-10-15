@@ -37,7 +37,7 @@
 // calibrated similarity — magnitudes are not comparable across queries.
 // That's fine for candidate gen: only the rank order matters.
 
-import { selectTopNIndices } from './select';
+import { selectTopNIndices } from './select.ts';
 
 // Pack a unit-L2 fp32 vector to its sign-bit representation. One bit per dim,
 // LSB-first within each byte (`bit i` of byte `b` corresponds to dim `b*8+i`).

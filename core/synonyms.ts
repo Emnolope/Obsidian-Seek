@@ -29,9 +29,9 @@
 // stoplist + depluralizer pipeline as queries (bm25.ts processTerm); the
 // feature is untested on non-English vaults by construction.
 
-import type { ChunkMeta } from './chunker';
-import { extractNoteName, processQueryTerm } from './bm25';
-import { seekTokenize } from './tokenize';
+import type { ChunkMeta } from './chunker.ts';
+import { extractNoteName, processQueryTerm } from './bm25.ts';
+import { seekTokenize } from './tokenize.ts';
 
 // Mate score discount, mirroring the harness arm (w=0.8 swept best on the
 // personal eval; cf. MiniSearch's own fuzzy weight 0.45 / prefix 0.375).

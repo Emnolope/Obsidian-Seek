@@ -55,3 +55,15 @@ The tarball bundles `core/` into `dist/`; only `onnxruntime-*` come from npm, an
   `.obsidian/plugins/seek/index`.
 - `EMBEDDING_DIM` in `core/contract.ts` is now the source of the record stride; the plugin
   used to derive it from `ACTIVE_MODEL_SPEC.dim`. `parity.test.ts` pins the two together.
+
+## What lives in core/ (rule: everything except low-level I/O and UI)
+
+core/ holds all logic that doesn't touch a runtime: chunking, tokenizing, BM25, fusion, ranking, query parsing, passages/snippets, the search pipeline (`engine.ts` → `runSearch`), frame/drift helpers, the sidecar and export formats.
+Runtime-specific work goes behind `SearchHost` (engine.ts): IndexedDB or files, the embedder, workers, logging, Obsidian's property registry.
+`memory-host.ts` is the reference host (whole corpus in RAM); the MCP server uses it as-is.
+
+Constraints, enforced by `tsconfig.core.json` and the MCP tests:
+- no `obsidian`, DOM or Node imports (`globals.d.ts` declares the few universal globals);
+- explicit `.ts` import extensions and no constructor parameter properties, because the MCP tests load core/ under node's strip-only TypeScript mode.
+
+Still in src/ (to port or split next): `SearchOrchestrator` plumbing (indexing, delta, sidecar sync), embedder runtime, index-store, logger, UI.

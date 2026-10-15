@@ -28,7 +28,7 @@
 // lands, without anyone remembering to update this file. Both passes run over
 // the report copy only; the on-disk NDJSON is never rewritten.
 
-import { cyrb53Hex } from './chunker';
+import { cyrb53Hex } from './chunker.ts';
 
 // Keys whose values are file paths. Replaced by `note-<hash>.<ext>`.
 // `devices`/`deviceId` are deliberately absent — device ids are already opaque

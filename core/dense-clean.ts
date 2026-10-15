@@ -24,7 +24,7 @@
 // entity reference, not prose, and the basename is its canonical key. The two
 // rules diverge on purpose.
 
-import { parseAtoms } from './atoms';
+import { parseAtoms } from './atoms.ts';
 
 // Image/asset extensions whose embeds carry no readable text — the file name
 // ("Pasted image 20260628.png", an og:image path) is junk, so the whole embed

@@ -2,9 +2,9 @@
 // Direct port of python-backend/app/search/fusion.py and the title-boost helper
 // in ranker.py. Coefficients match the live Python backend's defaults.
 
-import { depluralize, ENGLISH_STOPWORDS, foldDiacritics } from './bm25';
-import { hasCjk, segmentCjkToken, seekTokenize } from './tokenize';
-import type { RecencyKeyChoice } from './types';
+import { depluralize, ENGLISH_STOPWORDS, foldDiacritics } from './bm25.ts';
+import { hasCjk, segmentCjkToken, seekTokenize } from './tokenize.ts';
+import type { RecencyKeyChoice } from './types.ts';
 
 // (minmaxNormalize deleted 2026-06-11 with the RRF blend mode — its last
 // consumer. Per-query min-max as a CHANNEL normalizer was already replaced by

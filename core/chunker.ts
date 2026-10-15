@@ -25,13 +25,13 @@
 // forward-progress guarantee (JWT-blob class) lives on in token-budget.ts's
 // hardSplitByTokens, which has the same strictly-shrinking guard.
 
-import type { Chunk, ChunkMeta, ChunkMetadata, BaseView } from './types';
-import { scanHeadings } from './atoms';
-import { toDisplayForm } from './prop-normalize';
-import { cleanDenseText, cleanDenseBody, extractLinkTerms, extractLinkTermsBody, ASSET_EXT_RE as SUFFIX_ASSET_RE } from './dense-clean';
-import { depluralize, MACHINERY_KEYS } from './bm25';
-import { seekTokenize } from './tokenize';
-import { extractInlineTags } from './tag-grammar';
+import type { Chunk, ChunkMeta, ChunkMetadata, BaseView } from './types.ts';
+import { scanHeadings } from './atoms.ts';
+import { toDisplayForm } from './prop-normalize.ts';
+import { cleanDenseText, cleanDenseBody, extractLinkTerms, extractLinkTermsBody, ASSET_EXT_RE as SUFFIX_ASSET_RE } from './dense-clean.ts';
+import { depluralize, MACHINERY_KEYS } from './bm25.ts';
+import { seekTokenize } from './tokenize.ts';
+import { extractInlineTags } from './tag-grammar.ts';
 export type { Chunk, ChunkMeta, ChunkMetadata };
 
 const FRONTMATTER_RE = /^---\s*\n([\s\S]*?)\n---\s*\n/;

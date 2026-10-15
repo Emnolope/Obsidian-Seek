@@ -30,7 +30,7 @@ async function handle(message: any): Promise<any> {
   if (message.method === 'notifications/initialized') return undefined;
   if (message.method === 'tools/list') return success(message.id, { tools: [
     { name: 'index_status', description: 'Return Seek export metadata and load status for an Obsidian vault.', inputSchema: { type: 'object', required: ['vaultDir'], properties: { vaultDir: { type: 'string', description: 'Absolute or relative path to an Obsidian vault directory.' } } } },
-    { name: 'semantic_search', description: 'Rank Seek chunks from an Obsidian vault by cosine similarity to query text or a precomputed query vector.', inputSchema: { type: 'object', required: ['vaultDir'], properties: { vaultDir: { type: 'string', description: 'Absolute or relative path to an Obsidian vault directory.' }, queryText: { type: 'string' }, queryVector: { type: 'array', items: { type: 'number' } }, topK: { type: 'integer', minimum: 1, maximum: 100 }, pathPrefix: { type: 'string' } } } },
+    { name: 'semantic_search', description: 'Hybrid (BM25 + dense) search over the Seek index of a vault, ranked exactly like the Obsidian plugin; supports its inline filters (#tag, path:, [key:value], before:/after:). Takes query text, or a precomputed query vector.', inputSchema: { type: 'object', required: ['vaultDir'], properties: { vaultDir: { type: 'string', description: 'Absolute or relative path to an Obsidian vault directory.' }, queryText: { type: 'string' }, queryVector: { type: 'array', items: { type: 'number' } }, topK: { type: 'integer', minimum: 1, maximum: 100 }, pathPrefix: { type: 'string' } } } },
     { name: 'fetch_chunk', description: 'Fetch one indexed chunk from an Obsidian vault by ID.', inputSchema: { type: 'object', required: ['vaultDir', 'chunkId'], properties: { vaultDir: { type: 'string', description: 'Absolute or relative path to an Obsidian vault directory.' }, chunkId: { type: 'string' } } } },
     { name: 'fetch_note', description: 'Fetch all indexed chunks for a vault-relative note path from an Obsidian vault.', inputSchema: { type: 'object', required: ['vaultDir', 'notePath'], properties: { vaultDir: { type: 'string', description: 'Absolute or relative path to an Obsidian vault directory.' }, notePath: { type: 'string' } } } },
   ] });
@@ -42,11 +42,10 @@ async function handle(message: any): Promise<any> {
       throw new Error('semantic_search requires queryText or queryVector');
     }
     const value = message.params.name === 'index_status' ? index.status()
-      : message.params.name === 'semantic_search' ? index.search(
-        args.queryVector ?? Array.from(await queryEmbedder.embed(args.queryText)),
-        args.topK,
-        args.pathPrefix,
-      )
+      : message.params.name === 'semantic_search' ? await index.search({
+        text: args.queryText, vector: args.queryVector, embed: t => queryEmbedder.embed(t),
+        topK: args.topK, pathPrefix: args.pathPrefix,
+      })
       : message.params.name === 'fetch_chunk' ? index.chunk(args.chunkId)
       : message.params.name === 'fetch_note' ? index.note(args.notePath)
       : (() => { throw new Error(`unknown tool: ${message.params.name}`); })();

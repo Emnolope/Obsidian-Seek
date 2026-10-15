@@ -1,20 +1,20 @@
 // The query pipeline, lifted out of SearchOrchestrator.search() so the plugin and the MCP server run ONE ranking implementation.
 // Everything that touches IndexedDB, the embedder runtime, Obsidian, workers, or the log file sits behind SearchHost; the plugin and the MCP each supply their own.
-import type { ChunkMeta, ScoredChunk, SearchEntry, QueryFilters, FilterContext, SeekSettings } from './types';
-import { cleanDenseText } from './dense-clean';
-import { MultiFieldBM25, FUZZY_BY_LENGTH, PREFIX_LAST_TOKEN, BM25_COVERAGE_POW } from './bm25';
-import { SYNONYM_WEIGHT, type SynonymMap } from './synonyms';
-import { rank, cosineScores, DEFAULT_RANKING_CONFIG } from './ranker';
-import { recencyDate } from './fusion';
-import { browseOrder } from './fusion';
-import { topNIndices } from './binary';
-import { selectTopNIndices } from './select';
-import { poolCaps, POOL_FLOORS } from './pool';
-import { dequantizeInt8 } from './quant';
-import { calibratedConfidence } from './dense-stats';
-import { parseQuery, compileMatcher, excludedNotePaths } from './query-parser';
-import { buildPassageTerms } from './passage';
-import { alignCandidate, buildSelectionMask, frameBm25Coherent, dedupByPath, topKByScore, makeSnippet, type ResidentFrame } from './search-helpers';
+import type { ChunkMeta, ScoredChunk, SearchEntry, QueryFilters, FilterContext, SeekSettings } from './types.ts';
+import { cleanDenseText } from './dense-clean.ts';
+import { MultiFieldBM25, FUZZY_BY_LENGTH, PREFIX_LAST_TOKEN, BM25_COVERAGE_POW } from './bm25.ts';
+import { SYNONYM_WEIGHT, type SynonymMap } from './synonyms.ts';
+import { rank, cosineScores, DEFAULT_RANKING_CONFIG } from './ranker.ts';
+import { recencyDate } from './fusion.ts';
+import { browseOrder } from './fusion.ts';
+import { topNIndices } from './binary.ts';
+import { selectTopNIndices } from './select.ts';
+import { poolCaps, POOL_FLOORS } from './pool.ts';
+import { dequantizeInt8 } from './quant.ts';
+import { calibratedConfidence } from './dense-stats.ts';
+import { parseQuery, compileMatcher, excludedNotePaths } from './query-parser.ts';
+import { buildPassageTerms } from './passage.ts';
+import { alignCandidate, buildSelectionMask, frameBm25Coherent, dedupByPath, topKByScore, makeSnippet, type ResidentFrame } from './search-helpers.ts';
 
 // Per-call override of the recency knobs; a call argument, never written into settings, so concurrent searches can't see each other's override.
 export interface RecencyOverride {

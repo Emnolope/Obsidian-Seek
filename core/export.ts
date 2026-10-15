@@ -3,6 +3,7 @@
 // the sidecar (format.ts), joined by chunkId. Pure — callers do the file I/O.
 
 import { EXPORT_SCHEMA_VERSION } from './contract.ts';
+import type { ChunkMeta } from './types.ts';
 
 export const EXPORT_DIRNAME = 'MCP Export';
 export const EXPORT_DOCS_FILE = 'documents.jsonl';
@@ -15,6 +16,8 @@ export interface ExportDocument {
     content: string;
     chunkIndex: number;
     mtime: number;
+    // Everything the ranker, filters and recency arm read (tags, aliases, props, dates, headings...). The flat fields above stay for readers that only need display data.
+    meta: ChunkMeta;
 }
 
 export interface ExportMeta {
