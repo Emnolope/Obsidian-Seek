@@ -4,6 +4,9 @@ name: Release
 # whose tag EXACTLY matches manifest.json "version" (no leading "v"), with
 # main.js / manifest.json / styles.css attached as individual assets.
 #
+# The same release also carries obsidian-seek-mcp-<version>.tgz (the MCP server);
+# see PARITY.md for how to install either half.
+#
 # Cut a release from this repo with:
 #   npm version patch        # bumps manifest + versions.json, commits, tags
 #   git push --follow-tags   # pushes the tag -> fires this workflow
@@ -30,10 +33,13 @@ jobs:
         with:
           node-version: "22.x"
           cache: npm
-      - name: Build plugin
+      - name: Build plugin and MCP package
         run: |
           npm ci
           npm run build
+          # Same commit, same tag: the MCP tarball can never be built against a different
+          # index format than the plugin it ships beside.
+          npm pack -w obsidian-seek-mcp --pack-destination .
       # Attest the assets actually built in THIS run, so the provenance binds to
       # the published bytes. Requires the release to ship the CI build (push the
       # tag, let this draft, then publish it) — not a locally-built upload.
@@ -43,6 +49,7 @@ jobs:
           subject-path: |
             main.js
             styles.css
+            obsidian-seek-mcp-*.tgz
       - name: Create draft release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -53,4 +60,4 @@ jobs:
             --title "$tag" \
             --draft \
             --generate-notes \
-            main.js manifest.json styles.css
+            main.js manifest.json styles.css obsidian-seek-mcp-*.tgz

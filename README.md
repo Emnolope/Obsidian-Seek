@@ -11,6 +11,8 @@ Relevance has been tested and evaluated on hundreds of thousands of queries and 
 
 
 
+> **This fork** ships the plugin and an MCP server from one repo with a shared format core. See [PARITY.md](PARITY.md).
+
 ## Features
 - Support for 52 languages (plus code)
 - Inline filtering with autosuggestions

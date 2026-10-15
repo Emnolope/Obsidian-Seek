@@ -6,9 +6,11 @@
     "scripts": {
         "dev": "node esbuild.config.mjs",
         "build": "node esbuild.config.mjs production",
-        "typecheck": "tsc --noEmit",
+        "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.core.json && npm run build -w obsidian-seek-mcp",
         "test": "vitest run",
-        "version": "node version-bump.mjs && git add manifest.json versions.json"
+        "version": "node version-bump.mjs && git add manifest.json versions.json",
+        "test:mcp": "npm test -w obsidian-seek-mcp",
+        "build:mcp": "npm run build:bundle -w obsidian-seek-mcp"
     },
     "keywords": [
         "obsidian",
@@ -29,5 +31,8 @@
     },
     "dependencies": {
         "minisearch": "^7.2.0"
-    }
+    },
+    "workspaces": [
+        "mcp"
+    ]
 }

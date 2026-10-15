@@ -16,3 +16,4 @@ captures/
 
 # Throwaway diagnostic probes / scratch HTML (e.g. lazyrelease-probe). Local-only.
 experiments/
+mcp/dist

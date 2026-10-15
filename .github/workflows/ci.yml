@@ -19,5 +19,9 @@ jobs:
         run: npm run typecheck
       - name: Test
         run: npm test
-      - name: Build
+      - name: Test MCP server
+        run: npm run test:mcp
+      - name: Build plugin
         run: npm run build
+      - name: Build MCP package
+        run: npm run build:mcp

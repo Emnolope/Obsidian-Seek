@@ -1,4 +1,4 @@
-import { defineConfig } from 'vitest/config';
+import { configDefaults, defineConfig } from 'vitest/config';
 import { fileURLToPath } from 'node:url';
 
 // The `obsidian` package is types-only (package.json main: "") — esbuild
@@ -11,6 +11,8 @@ export default defineConfig({
     // popout-window-safe `window.setTimeout`/`activeWindow` calls resolve under
     // test (see test-stubs/test-setup.ts). Patchable by vi.useFakeTimers().
     test: {
+        // mcp/ has its own node:test suite (npm run test:mcp); parity.test.ts is the bridge.
+        exclude: [...configDefaults.exclude, 'mcp/**'],
         setupFiles: [fileURLToPath(new URL('./src/test-stubs/test-setup.mts', import.meta.url))],
     },
     resolve: {

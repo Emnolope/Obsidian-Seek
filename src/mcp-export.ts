@@ -3,29 +3,13 @@ import { ACTIVE_MODEL_SPEC } from './model-registry';
 import { CHUNKER_VERSION } from './chunker';
 import type { ChunkMeta } from './types';
 import type { FileRecord, IndexStore } from './index-store';
+import { EXPORT_DIRNAME, EXPORT_DOCS_FILE, EXPORT_META_FILE, serializeDocuments, serializeMeta, type ExportDocument, type ExportMeta } from '../core/export';
+import { EXPORT_SCHEMA_VERSION } from '../core/contract';
 
-export const MCP_EXPORT_DIR = 'Seek Index/MCP Export';
+export const MCP_EXPORT_DIR = `Seek Index/${EXPORT_DIRNAME}`;
 
-export interface McpExportDocument {
-    chunkId: string;
-    notePath: string;
-    title: string;
-    content: string;
-    chunkIndex: number;
-    mtime: number;
-}
-
-export interface McpExportMeta {
-    schemaVersion: 1;
-    generation: string;
-    modelId: string;
-    revision: string;
-    chunkerVersion: number;
-    dimension: number;
-    chunkCount: number;
-}
-
-function jsonLine(value: unknown): string { return `${JSON.stringify(value)}\n`; }
+export type McpExportDocument = ExportDocument;
+export type McpExportMeta = ExportMeta;
 
 export async function exportMcpIndex(adapter: DataAdapter, store: IndexStore): Promise<McpExportMeta> {
     const metas = await store.listAllMeta();
@@ -56,7 +40,7 @@ export async function exportMcpIndex(adapter: DataAdapter, store: IndexStore): P
     }
     const generation = `${Date.now()}-${documents.length}`;
     const exportMeta: McpExportMeta = {
-        schemaVersion: 1,
+        schemaVersion: EXPORT_SCHEMA_VERSION,
         generation,
         modelId: ACTIVE_MODEL_SPEC.repo,
         revision: ACTIVE_MODEL_SPEC.revision ?? 'main',
@@ -66,8 +50,8 @@ export async function exportMcpIndex(adapter: DataAdapter, store: IndexStore): P
     };
     const temp = `${MCP_EXPORT_DIR}.tmp-${generation}`;
     await adapter.mkdir(temp);
-    await adapter.write(`${temp}/documents.jsonl`, documents.map(jsonLine).join(''));
-    await adapter.write(`${temp}/export.meta.json`, JSON.stringify(exportMeta, null, 2));
+    await adapter.write(`${temp}/${EXPORT_DOCS_FILE}`, serializeDocuments(documents));
+    await adapter.write(`${temp}/${EXPORT_META_FILE}`, serializeMeta(exportMeta));
     if (await adapter.exists(MCP_EXPORT_DIR)) await adapter.remove(MCP_EXPORT_DIR);
     await adapter.rename(temp, MCP_EXPORT_DIR);
     return exportMeta;
