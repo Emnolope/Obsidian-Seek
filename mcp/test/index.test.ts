@@ -51,3 +51,15 @@ test('hybrid search: lexical text can outvote a weak dense signal and hits carry
   assert.ok(!('q' in hits[0]) && !('vector' in hits[0]));
   assert.ok('bm25' in hits[0].signals);
 });
+
+test('vector-only search is exact cosine, and vectors are returned on request', async () => {
+  const index = await SeekIndex.load(await fixture());
+  // Not unit-length on purpose: cosine must normalize.
+  const hits = await index.search({ vector: [0, 5, ...new Array(382).fill(0)], topK: 2, includeVectors: true });
+  assert.equal(hits[0].chunkId, 'b');
+  assert.ok(Math.abs(hits[0].score - 1) < 1e-2);
+  assert.equal(hits[0].vector!.length, 384);
+  assert.equal(index.chunk('a', true).vector!.length, 384);
+  assert.equal(index.note('one.md', true)[0].vector!.length, 384);
+  assert.ok(!('vector' in index.chunk('a')));
+});

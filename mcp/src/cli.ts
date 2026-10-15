@@ -6,10 +6,10 @@ const queryEmbedder = new SeekQueryEmbedder();
 const usage = `Usage:
   seek-mcp status <vaultDir> [--json]
   seek-mcp embed <query> [--json]
-  seek-mcp search <vaultDir> <query> [--top-k N] [--path-prefix PREFIX] [--json]
+  seek-mcp search <vaultDir> <query> [--top-k N] [--path-prefix PREFIX] [--vectors] [--json]
   seek-mcp search <vaultDir> --vector <comma-separated values> [--top-k N] [--path-prefix PREFIX] [--json]
-  seek-mcp chunk <vaultDir> <chunkId> [--json]
-  seek-mcp note <vaultDir> <notePath> [--json]
+  seek-mcp chunk <vaultDir> <chunkId> [--vectors] [--json]
+  seek-mcp note <vaultDir> <notePath> [--vectors] [--json]
 `;
 
 interface Arguments {
@@ -17,18 +17,22 @@ interface Arguments {
   positional: string[];
   options: Map<string, string>;
   json: boolean;
+  vectors: boolean;
 }
 
 function parseArguments(argv: string[]): Arguments {
   const positional: string[] = [];
   const options = new Map<string, string>();
   let json = false;
+  let vectors = false;
   for (let index = 2; index < argv.length; index++) {
     const argument = argv[index];
     if (argument === '--help' || argument === '-h') {
       positional.push(argument);
     } else if (argument === '--json') {
       json = true;
+    } else if (argument === '--vectors') {
+      vectors = true;
     } else if (argument.startsWith('--')) {
       const name = argument.slice(2);
       const value = argv[++index];
@@ -38,7 +42,7 @@ function parseArguments(argv: string[]): Arguments {
       positional.push(argument);
     }
   }
-  return { command: positional.shift() ?? 'help', positional, options, json };
+  return { command: positional.shift() ?? 'help', positional, options, json, vectors };
 }
 
 function requiredPositionals(args: Arguments, count: number): string[] {
@@ -111,17 +115,17 @@ async function run(args: Arguments): Promise<void> {
     const queryVector = args.options.get('vector') ? parseVector(args.options.get('vector')!) : undefined;
     const queryText = queryVector ? undefined : [value, ...args.positional.slice(1)].join(' ');
     if (!queryVector && !queryText) throw new Error('search requires a query or --vector');
-    const hits = await index.search({ text: queryText, vector: queryVector, embed: t => queryEmbedder.embed(t), topK, pathPrefix: args.options.get('path-prefix') });
+    const hits = await index.search({ text: queryText, vector: queryVector, embed: t => queryEmbedder.embed(t), topK, pathPrefix: args.options.get('path-prefix'), includeVectors: args.vectors });
     print(args.json ? hits : hits.map((hit, hitIndex) => `#${hitIndex + 1} ${hit.score.toFixed(4)}\n${formatDocument(hit)}`).join('\n\n'), args.json);
     return;
   }
   if (args.command === 'chunk') {
-    const chunk = index.chunk(value);
+    const chunk = index.chunk(value, args.vectors);
     print(args.json ? chunk : formatDocument(chunk), args.json);
     return;
   }
   if (args.command === 'note') {
-    const chunks = index.note([value, ...args.positional.slice(1)].join(' '));
+    const chunks = index.note([value, ...args.positional.slice(1)].join(' '), args.vectors);
     print(args.json ? chunks : chunks.map(formatDocument).join('\n\n'), args.json);
     return;
   }

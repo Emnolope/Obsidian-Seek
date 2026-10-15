@@ -626,3 +626,37 @@ export async function runSearch(host: SearchHost, query: string, topK = 10, rece
     void breakdown;
     return { results, entry };
 }
+
+// Pure dense search for callers that hold only a vector (no query text, so nothing lexical to fuse). Exact cosine over every live row,
+// per-chunk results (no note dedup), same as the MCP's original vector path. True cosine rather than ranker.cosineScores' dot product,
+// because a caller-supplied vector isn't guaranteed unit-length.
+export async function runDenseSearch(host: SearchHost, query: Float32Array, topK: number, pathPrefix?: string): Promise<ScoredChunk[]> {
+    const { frame } = await host.frame();
+    if (!frame) return [];
+    const { orderedChunks, orderedIds, residentInt8, residentScales, embDim, validRows } = frame;
+    if (query.length !== embDim && residentInt8) throw new Error(`query vector has dimension ${query.length}, index has ${embDim}`);
+    let qq = 0;
+    for (let d = 0; d < query.length; d++) qq += query[d] * query[d];
+    const rows = orderedChunks.length;
+    const scores = new Float64Array(rows);
+    const fallback = residentInt8 ? null : await host.embeddings(orderedIds);
+    for (let i = 0; i < rows; i++) {
+        const live = validRows[i] && (!pathPrefix || (orderedChunks[i].note_path ?? '').startsWith(pathPrefix));
+        if (!live) { scores[i] = -Infinity; continue; }
+        const v = residentInt8 ? dequantizeInt8(residentInt8.subarray(i * embDim, (i + 1) * embDim), residentScales![i]) : fallback![i];
+        if (!v) { scores[i] = -Infinity; continue; }
+        let dot = 0, vv = 0;
+        for (let d = 0; d < query.length; d++) { dot += query[d] * v[d]; vv += v[d] * v[d]; }
+        scores[i] = qq && vv ? dot / Math.sqrt(qq * vv) : 0;
+    }
+    const picked = Array.from(scores.keys()).filter(i => scores[i] > -Infinity).sort((a, b) => scores[b] - scores[a]).slice(0, topK);
+    const results: ScoredChunk[] = picked.map(i => ({
+        ...orderedChunks[i],
+        content: '',
+        score: scores[i],
+        ranking_signals: { dense: scores[i], bm25: 0, hybrid: scores[i], recency: 0, title_boost: 0, denseRaw: scores[i] },
+    }));
+    await hydrateBodies(host, results);
+    for (const r of results) r.snippet = makeSnippet(r.content, [], 200);
+    return results;
+}

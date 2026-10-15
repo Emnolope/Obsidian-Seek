@@ -30,9 +30,9 @@ async function handle(message: any): Promise<any> {
   if (message.method === 'notifications/initialized') return undefined;
   if (message.method === 'tools/list') return success(message.id, { tools: [
     { name: 'index_status', description: 'Return Seek export metadata and load status for an Obsidian vault.', inputSchema: { type: 'object', required: ['vaultDir'], properties: { vaultDir: { type: 'string', description: 'Absolute or relative path to an Obsidian vault directory.' } } } },
-    { name: 'semantic_search', description: 'Hybrid (BM25 + dense) search over the Seek index of a vault, ranked exactly like the Obsidian plugin; supports its inline filters (#tag, path:, [key:value], before:/after:). Takes query text, or a precomputed query vector.', inputSchema: { type: 'object', required: ['vaultDir'], properties: { vaultDir: { type: 'string', description: 'Absolute or relative path to an Obsidian vault directory.' }, queryText: { type: 'string' }, queryVector: { type: 'array', items: { type: 'number' } }, topK: { type: 'integer', minimum: 1, maximum: 100 }, pathPrefix: { type: 'string' } } } },
-    { name: 'fetch_chunk', description: 'Fetch one indexed chunk from an Obsidian vault by ID.', inputSchema: { type: 'object', required: ['vaultDir', 'chunkId'], properties: { vaultDir: { type: 'string', description: 'Absolute or relative path to an Obsidian vault directory.' }, chunkId: { type: 'string' } } } },
-    { name: 'fetch_note', description: 'Fetch all indexed chunks for a vault-relative note path from an Obsidian vault.', inputSchema: { type: 'object', required: ['vaultDir', 'notePath'], properties: { vaultDir: { type: 'string', description: 'Absolute or relative path to an Obsidian vault directory.' }, notePath: { type: 'string' } } } },
+    { name: 'semantic_search', description: 'Hybrid (BM25 + dense) search over the Seek index of a vault, ranked exactly like the Obsidian plugin; supports its inline filters (#tag, path:, [key:value], before:/after:). Takes query text, or a precomputed query vector.', inputSchema: { type: 'object', required: ['vaultDir'], properties: { vaultDir: { type: 'string', description: 'Absolute or relative path to an Obsidian vault directory.' }, queryText: { type: 'string' }, queryVector: { type: 'array', items: { type: 'number' } }, topK: { type: 'integer', minimum: 1, maximum: 100 }, pathPrefix: { type: 'string' }, includeVectors: { type: 'boolean', description: 'Include each chunk\'s 384-d embedding vector. Off by default to keep responses small.' } } } },
+    { name: 'fetch_chunk', description: 'Fetch one indexed chunk from an Obsidian vault by ID.', inputSchema: { type: 'object', required: ['vaultDir', 'chunkId'], properties: { vaultDir: { type: 'string', description: 'Absolute or relative path to an Obsidian vault directory.' }, chunkId: { type: 'string' }, includeVectors: { type: 'boolean', description: 'Include each chunk\'s 384-d embedding vector. Off by default to keep responses small.' } } } },
+    { name: 'fetch_note', description: 'Fetch all indexed chunks for a vault-relative note path from an Obsidian vault.', inputSchema: { type: 'object', required: ['vaultDir', 'notePath'], properties: { vaultDir: { type: 'string', description: 'Absolute or relative path to an Obsidian vault directory.' }, notePath: { type: 'string' }, includeVectors: { type: 'boolean', description: 'Include each chunk\'s 384-d embedding vector. Off by default to keep responses small.' } } } },
   ] });
   if (message.method !== 'tools/call') return message.id === undefined ? undefined : failure(message.id, -32601, 'method not found');
   try {
@@ -44,10 +44,10 @@ async function handle(message: any): Promise<any> {
     const value = message.params.name === 'index_status' ? index.status()
       : message.params.name === 'semantic_search' ? await index.search({
         text: args.queryText, vector: args.queryVector, embed: t => queryEmbedder.embed(t),
-        topK: args.topK, pathPrefix: args.pathPrefix,
+        topK: args.topK, pathPrefix: args.pathPrefix, includeVectors: args.includeVectors === true,
       })
-      : message.params.name === 'fetch_chunk' ? index.chunk(args.chunkId)
-      : message.params.name === 'fetch_note' ? index.note(args.notePath)
+      : message.params.name === 'fetch_chunk' ? index.chunk(args.chunkId, args.includeVectors === true)
+      : message.params.name === 'fetch_note' ? index.note(args.notePath, args.includeVectors === true)
       : (() => { throw new Error(`unknown tool: ${message.params.name}`); })();
     return success(message.id, result(value));
   } catch (e) { return success(message.id, error(e instanceof Error ? e.message : String(e))); }

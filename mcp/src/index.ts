@@ -1,7 +1,8 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
-import { runSearch } from '../../core/engine.ts';
+import { runDenseSearch, runSearch } from '../../core/engine.ts';
 import { MemoryHost, resolveSettings } from '../../core/memory-host.ts';
+import { dequantizeInt8 } from '../../core/quant.ts';
 import type { SeekSettings } from '../../core/types.ts';
 import { EXPORT_DIRNAME, EXPORT_DOCS_FILE, EXPORT_META_FILE, parseDocuments, parseMeta, type ExportDocument, type ExportMeta } from '../../core/export.ts';
 import { readRecordAt, scanJsonl, SIDECAR_FORMAT } from './sidecar.ts';
@@ -13,7 +14,8 @@ export interface DocumentRecord extends ExportDocument {
   s: number;
 }
 
-// What callers see: no vectors (384 floats per hit is pure token waste for an agent), but the ranking signals that explain the order.
+// Vectors are opt-in per call (includeVectors): 384 floats per hit is heavy for an agent's context, but they're the machine-native form of a chunk and
+// stay available for diagnostics and for feeding latent vectors straight into a model.
 export interface SearchHit {
   chunkId: string;
   notePath: string;
@@ -23,7 +25,10 @@ export interface SearchHit {
   content: string;
   score: number;
   signals: Record<string, number>;
+  vector?: number[];
 }
+
+export type FetchedChunk = ExportDocument & { vector?: number[] };
 
 export interface SearchQuery {
   text?: string;
@@ -32,6 +37,7 @@ export interface SearchQuery {
   embed?: (text: string) => Promise<Float32Array>;
   topK?: number;
   pathPrefix?: string;
+  includeVectors?: boolean;
 }
 
 // ┌─────────────────────────────────────────────────────────────────────────┐
@@ -53,9 +59,6 @@ function confined(root: string, notePath: string): string {
   }
   return path;
 }
-
-// Strips the int8 vector so fetch results stay readable and small.
-function plain({ q: _q, s: _s, ...rest }: DocumentRecord): ExportDocument { return rest; }
 
 export class SeekIndex {
   readonly root: string;
@@ -142,32 +145,41 @@ export class SeekIndex {
     const { vector, text, embed } = query;
     if (vector && vector.length !== this.meta.dimension) throw new Error(`query vector must have dimension ${this.meta.dimension}`);
     if (!vector && !text?.trim()) throw new Error('search needs query text or a query vector');
-    this.embedNow = vector ? async () => Float32Array.from(vector) : embed ?? this.embedNow;
-    // Vector-only has no lexical text; the filter-only (browse) branch would swallow it, so give the engine a placeholder term. BM25 on it is noise next to a dense score at alpha, and no real term should ever equal it.
-    const run = text?.trim() ? text : '\u2063';
-    // pathPrefix is applied after ranking, so over-fetch to still return topK.
-    const want = query.pathPrefix ? 100 : topK;
-    const { results } = await runSearch(this.host, run, want);
-    const at = new Map(this.documents.map(d => [d.chunkId, d.chunkIndex]));
-    return results
-      .filter(r => !query.pathPrefix || r.note_path.startsWith(query.pathPrefix))
-      .slice(0, topK)
-      .map(r => ({
+    const byId = new Map(this.documents.map(d => [d.chunkId, d]));
+    const shape = (r: Awaited<ReturnType<typeof runSearch>>['results'][number]): SearchHit => {
+      const doc = byId.get(r.chunk_id);
+      return {
         chunkId: r.chunk_id, notePath: r.note_path, title: r.title,
-        chunkIndex: at.get(r.chunk_id) ?? 0,
+        chunkIndex: doc?.chunkIndex ?? 0,
         snippet: r.snippet ?? '', content: r.content, score: r.score,
         signals: r.ranking_signals as unknown as Record<string, number>,
-      }));
+        ...(query.includeVectors && doc ? { vector: this.vectorOf(doc) } : {}),
+      };
+    };
+    // Vector with no text: nothing lexical to fuse, so rank by exact cosine.
+    if (vector && !text?.trim()) return (await runDenseSearch(this.host, Float32Array.from(vector), topK, query.pathPrefix)).map(shape);
+    this.embedNow = vector ? async () => Float32Array.from(vector) : embed ?? this.embedNow;
+    // pathPrefix is applied after ranking, so over-fetch to still return topK.
+    const want = query.pathPrefix ? 100 : topK;
+    const { results } = await runSearch(this.host, text!, want);
+    return results.filter(r => !query.pathPrefix || r.note_path.startsWith(query.pathPrefix)).slice(0, topK).map(shape);
   }
 
-  chunk(chunkId: string): ExportDocument {
+  vectorOf(d: DocumentRecord): number[] { return Array.from(dequantizeInt8(d.q, d.s)); }
+
+  chunk(chunkId: string, includeVectors = false): FetchedChunk {
     const document = this.documents.find(candidate => candidate.chunkId === chunkId);
     if (!document) throw new Error(`chunk not found: ${chunkId}`);
-    return plain(document);
+    return this.out(document, includeVectors);
   }
 
-  note(notePath: string): ExportDocument[] {
+  note(notePath: string, includeVectors = false): FetchedChunk[] {
     confined(this.root, notePath);
-    return this.documents.filter(document => document.notePath === notePath).map(plain);
+    return this.documents.filter(document => document.notePath === notePath).map(d => this.out(d, includeVectors));
+  }
+
+  private out(d: DocumentRecord, withVector: boolean): FetchedChunk {
+    const { q: _q, s: _s, ...rest } = d;
+    return withVector ? { ...rest, vector: this.vectorOf(d) } : rest;
   }
 }
