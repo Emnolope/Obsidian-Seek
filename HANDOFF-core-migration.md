@@ -31,7 +31,7 @@
 - In runSearch, the BM25 index handle is captured once after prepareBm25 (the original re-read the live field at the end). Differs only if the cache is invalidated mid-search.
 
 ## Next work (ask him which first)
-A. SearchOrchestrator indexing/delta/reindex logic behind ports (chunk, diff, embed, commit). This is what gives the MCP WRITE access to the index; he wants human and bot both able to read and write. The on-disk format is the shared contract, so ASK before changing it.
+A. (PARTLY DONE) SearchOrchestrator indexing/delta/reindex logic behind ports. Done and in core/: delta.ts (computeDelta, rules, chunksFor), file-diff.ts, apply-delta.ts, embed-commit.ts (whole write pass), index-types.ts. Remaining in src/search.ts: reindexAll/reindexAllInner, reindexDelta, reconcileIdentityInPlace, sweepOrphanChunks, compaction, sidecar hydrate/dedup/carry-over, ensureFrame/ensureBinaryIndex, emitProgress. The plugin side supplies each port via `embedCommitCtx()`, `searchHost()`, and inline ctx objects. This is what gives the MCP WRITE access to the index; he wants human and bot both able to read and write. The on-disk format is the shared contract, so ASK before changing it.
 B. Sidecar hydration, BM25 persistence (tryLoadPersistedBm25, cross-device), reconcile logic.
 C. Embedder runtime: src/embedder.ts and iframe-runner.ts versus mcp/vendor/seek/src/* (pinned copies with 2-6 lines of drift each). None of the plugin originals import `obsidian`, so the MCP could import them directly. Needs his phone to test.
 D. Plugin exporter always writes `Seek Index/MCP Export` even when the index lives under `.obsidian/plugins/seek/index` (the MCP resolver checks hidden first, then visible).

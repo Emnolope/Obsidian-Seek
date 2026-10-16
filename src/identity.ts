@@ -17,21 +17,16 @@
 // dbVersion- or analyzer-only bump, so the SLICES stay distinct — only the
 // SOURCE of the constants (pluginIdentity) is shared.
 
+export type { IndexIdentity } from '../core/index-types';
+export { shouldStampLiveIdentity } from '../core/index-types';
+import type { IndexIdentity } from '../core/index-types';
 import { DB_VERSION, type MetaConfig } from './index-store';
 import { CHUNKER_VERSION } from './chunker';
 import { ANALYZER_VERSION } from './bm25';
 import { SIDECAR_FORMAT } from './sidecar';
 import { MODEL_ID, MODEL_REVISION, EMBEDDING_DIM, LEGACY_ENGLISH_MODEL_ID } from './embedder';
 
-export interface IndexIdentity {
-    dbVersion: number; // IndexedDB schema (index-store.ts) — enforced natively by IDB's onupgradeneeded
-    chunkerVersion: number; // chunk content+suffix derivation (chunker.ts) — feeds both embed bytes AND chunk_id
-    analyzerVersion: string; // BM25 token space / scoring (bm25.ts) — lexical-only, esbuild-injected ('dev' under vitest)
-    sidecarFormat: number; // cross-device file protocol (sidecar.ts)
-    modelId: string; // embedding model repo (embedder.ts)
-    revision: string | null; // pinned model commit sha, or null = track main (embedder.ts)
-    dim: number; // embedding dimension (embedder.ts)
-}
+
 
 // Read lazily (only when CALLED, never at module load) so the Phase-2
 // index-store ↔ identity import cycle stays TDZ-safe: every constant is resolved
@@ -94,29 +89,7 @@ export function identityFromMeta(meta: MetaConfig): IndexIdentity {
     };
 }
 
-// Should an index-write pass STAMP the live build identity into its meta (and refit
-// the dense-cosine background), versus carry the prior meta's fields forward unchanged?
-//
-//   • A FULL reindex always stamps — it rebuilt the whole index from the live build.
-//   • An INCREMENTAL pass normally preserves prevMeta, so a few changed files can't
-//     re-stamp a stale index as current — EXCEPT the cold first-build, where the store
-//     was empty when the pass began. That pass IS the current build (every chunk it
-//     writes is freshly embedded by this build) AND, as one whole-vault incremental,
-//     it saw the entire corpus — so it claims the live identity + computes the
-//     background, exactly like a full reindex.
-//
-// The emptiness gate is load-bearing and deliberately strict: a NON-empty store that
-// happens to carry no identity is a LEGACY index (older chunker/model, written before
-// the identity fields existed). It must stay "stale" so the version gate rebuilds it —
-// stamping the live identity onto it would falsely mark old-chunker/old-model vectors
-// as current. So the trigger is "store was empty", never "prevMeta lacks identity".
-//
-// This is the fix for the spurious-heal loop: a cold build that copied the empty meta's
-// absent identity wrote `undefined`, which identityFromMeta maps to a guaranteed
-// mismatch (-1 / null), so the gate re-launched a full reindex forever.
-export function shouldStampLiveIdentity(mode: 'full' | 'incremental', storeWasEmpty: boolean): boolean {
-    return mode === 'full' || storeWasEmpty;
-}
+
 
 // Is a version-mismatched index eligible for the cheap embed-free heal (stamp the
 // live identity in place), or is it GENUINELY old and must take the full reindex /

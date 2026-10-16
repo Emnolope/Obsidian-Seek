@@ -66,6 +66,6 @@ Constraints, enforced by `tsconfig.core.json` and the MCP tests:
 - no `obsidian`, DOM or Node imports (`globals.d.ts` declares the few universal globals);
 - explicit `.ts` import extensions and no constructor parameter properties, because the MCP tests load core/ under node's strip-only TypeScript mode.
 
-Also in core/ now: `index-types.ts` (FileRecord, MetaConfig, classifyFileDelta), `delta.ts` (indexing rules, chunksFor, computeDelta behind `DeltaPorts`), `file-diff.ts` (chunk-diff planner behind `DiffStore`), `apply-delta.ts` (in-place BM25 + frame patcher behind `ApplyCtx`).
+Also in core/ now: `index-types.ts` (FileRecord, MetaConfig, classifyFileDelta), `delta.ts` (indexing rules, chunksFor, computeDelta behind `DeltaPorts`), `file-diff.ts` (chunk-diff planner behind `DiffStore`), `apply-delta.ts` (in-place BM25 + frame patcher behind `ApplyCtx`), `embed-commit.ts` (the whole write pass: chunk, bucketed embed, atomic per-file commit, meta/identity stamp, sidecar-flush packaging, behind `EmbedCommitCtx`).
 
 Still in src/ (to port or split next): `SearchOrchestrator` plumbing (indexing, delta, sidecar sync), embedder runtime, index-store, logger, UI.

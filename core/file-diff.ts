@@ -114,3 +114,16 @@ export async function planFileDiff(
     }
     return { keepIds, embedIds };
 }
+
+// Capture a file's chunk bodies BEFORE deleteFile() drops them from IDB, so
+// applyDelta can reconstruct each removed doc for removeExact(). Chunk ids
+// are content hashes, so a captured body is byte-identical to what add()
+// indexed. Read failures degrade silently: a missing body makes applyDelta
+// decline into the ordinary full-rebuild fallback ("slow, never wrong").
+export async function captureRemovalBodies(store: DiffStore, path: string, sink: Map<string, string>): Promise<void> {
+    try {
+        const rec = await store.getFileRecord(path);
+        if (!rec || rec.chunk_ids.length === 0) return;
+        for (const [id, body] of await store.getBodiesMap(rec.chunk_ids)) sink.set(id, body);
+    } catch { /* handled at applyDelta as 'removal-body-missing' */ }
+}

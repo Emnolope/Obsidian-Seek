@@ -4,3 +4,4 @@ declare const console: { log(...a: unknown[]): void; warn(...a: unknown[]): void
 declare const performance: { now(): number };
 declare class TextEncoder { encode(s?: string): Uint8Array }
 declare const navigator: { storage?: { estimate(): Promise<{ usage?: number }> } } | undefined;
+declare function setTimeout(fn: (value: unknown) => void, ms?: number): unknown;
