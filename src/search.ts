@@ -43,6 +43,8 @@ import { parseQuery, compileMatcher, excludedNotePaths } from './query-parser';
 import { buildPassageTerms, passageWindow, type PassageTerm } from './passage';
 import { enumerateNumberPropertyNames } from './prop-types';
 import { exportMcpIndex } from './mcp-export';
+import { planFileDiff } from '../core/file-diff';
+import { applyDelta as applyDeltaCore } from '../core/apply-delta';
 import { shouldIndexByRules, chunksFor as chunksForCore, computeDelta, UnreadableQuarantine } from '../core/delta';
 import { runSearch, type SearchHost, type RecencyOverride } from '../core/engine';
 import { alignCandidate, buildResidentRerankBlock, chunkMetaEqual, pushDeltaAdds, freshDeltaAdds, appendFrameRows, tombstoneFrameRows, buildSelectionMask, COMPACTION_TOMBSTONE_FRACTION, COHERENCE_SAMPLES, COHERENCE_DRIFT_COOLDOWN_MS, coherenceDriftDecision, shouldDiscardPartialFrame, driftRecoveryDecision, frameBm25Coherent, buildBm25Stamp, bm25StampMatches, dedupByPath, topKByScore, snippetPlainText, makeSnippet, type ResidentFrame, type DeltaAdd, type DriftRecoveryState, type RowSpaceProbe, type Bm25PersistStamp } from '../core/search-helpers';
@@ -2047,263 +2049,34 @@ export class SearchOrchestrator {
         } catch { /* handled at applyDelta as 'removal-body-missing' */ }
     }
 
-    // Chunk-diff plan for one dirty file (issue #5). Returns null when there is
-    // no stored record (new file) — the caller embeds everything. On a plan:
-    // stale rows are deleted (bodies captured first for the exact-removal
-    // patch), id-stable chunks are classified untouched / meta-patch /
-    // reindex-row, and only genuinely-new ids remain to embed:
-    //   - untouched: byte-identical ChunkMeta → nothing anywhere.
-    //   - meta-patch: metadata drifted but none of it is BM25-indexed (line
-    //     numbers after an edit above the chunk, created/modified dates) → IDB
-    //     meta row refreshed here, frame row swapped in place by applyDelta.
-    //   - reindex-row: BM25-indexed metadata drifted while the id held (an
-    //     inline #tag in another section, a wikilink-target swap, a shape-junk
-    //     property) → IDB meta refreshed here; the row rides the change-set as
-    //     remove + re-add with its STORED tiers — no model forward pass.
-    // Vector reuse is licensed by an EXPLICIT embed-text comparison, not by id
-    // equality: on the v10 chunker "same id ⟹ same embed text" is provable
-    // (embedInput consumes a strict subset of the id hash), but chunker lines
-    // where the two compositions diverge (v11's per-chunk keyed suffix reads
-    // metadata the note-level id hash summarizes lossily — e.g. a property KEY
-    // rename moves the embed text but not the id) would silently reuse a stale
-    // vector. Comparing the real embedInput old-vs-new makes the license hold
-    // under ANY composition; a divergent chunk simply re-embeds.
-    // Any read failure throws to the caller, whose fallback restores the
-    // pre-diff wholesale delete + full re-embed.
     private async diffFileAgainstStore(
         path: string,
         fileChunks: Chunk[],
         budget: { addsSink?: DeltaAdd[]; removedSink: string[]; removedBodiesSink: Map<string, string>; metaPatchSink: Array<{ id: string; meta: ChunkMeta }> },
     ): Promise<{ keepIds: Set<string>; embedIds: Set<string> } | null> {
-        const rec = await this.store.getFileRecord(path);
-        if (!rec || rec.chunk_ids.length === 0) return null;
-        const newIds = new Set(fileChunks.map(c => c.chunk_id));
-        const staleIds = rec.chunk_ids.filter(id => !newIds.has(id));
-        const oldIdSet = new Set(rec.chunk_ids);
-        // Stale rows: capture bodies for removeExact, then delete. The sink gets
-        // the ids AFTER the IDB delete so the change-set only holds applied rows.
-        if (staleIds.length > 0) {
-            for (const [id, body] of await this.store.getBodiesMap(staleIds)) budget.removedBodiesSink.set(id, body);
-            await this.store.deleteChunksByIds(staleIds);
-            budget.removedSink.push(...staleIds);
-        }
-        const keepIds = new Set<string>();
-        const embedIds = new Set<string>();
-        const stable: Chunk[] = [];
-        for (const c of fileChunks) {
-            if (oldIdSet.has(c.chunk_id)) stable.push(c);
-            else embedIds.add(c.chunk_id);
-        }
-        if (stable.length > 0) {
-            const oldMetas = await this.store.getChunkMetasByIds(stable.map(c => c.chunk_id));
-            const metaPuts: ChunkMeta[] = [];
-            // Pass 1: classify. Reindex-row candidates are collected so their
-            // tier read is ONE batched transaction, not one per chunk — the
-            // whole-note tag edit puts ~every chunk in this lane, and N serial
-            // 4-store transactions inside the write mutex is exactly the
-            // per-commit IDB tax this fix exists to remove.
-            const reindexRows: Chunk[] = [];
-            for (const c of stable) {
-                const old = oldMetas.get(c.chunk_id);
-                if (!old) { embedIds.add(c.chunk_id); continue; }   // meta row missing (torn IDB) — re-embed heals
-                // The vector-reuse license (see the method comment): identical
-                // bodies are id-guaranteed, so old embed text reconstructs from
-                // the stored meta + this body.
-                if (embedInput({ ...old, content: c.content ?? '' }) !== embedInput(c)) {
-                    embedIds.add(c.chunk_id);
-                    continue;
-                }
-                const next = stripContent(c);
-                if (chunkMetaEqual(old, next)) { keepIds.add(c.chunk_id); continue; }
-                if (MultiFieldBM25.docFieldsEqual(old, next)) {
-                    metaPuts.push(next);
-                    budget.metaPatchSink.push({ id: c.chunk_id, meta: next });
-                    keepIds.add(c.chunk_id);
-                } else {
-                    reindexRows.push(c);
-                }
-            }
-            // Pass 2: the batched tier read + the change-set entries.
-            if (reindexRows.length > 0) {
-                const tiers = await this.store.getTiersByIds(reindexRows.map(c => c.chunk_id));
-                for (let i = 0; i < reindexRows.length; i++) {
-                    const c = reindexRows[i];
-                    const tier = tiers[i];
-                    if (!tier) { embedIds.add(c.chunk_id); continue; }   // vector row missing — re-embed heals
-                    // Removal reconstruction uses the OLD meta (the frame row) +
-                    // this body — identical bytes by content-addressing.
-                    metaPuts.push(stripContent(c));
-                    budget.removedBodiesSink.set(c.chunk_id, c.content ?? '');
-                    budget.removedSink.push(c.chunk_id);
-                    budget.addsSink?.push({ chunk: c, q: tier.q, bin: tier.sign });
-                    keepIds.add(c.chunk_id);
-                }
-            }
-            if (metaPuts.length > 0) await this.store.putChunkMetas(metaPuts);
-        }
-        return { keepIds, embedIds };
+        return planFileDiff(this.store, path, fileChunks, budget);
     }
 
-    // Incremental cache maintenance (Seek scaling A1). Mutate the live BM25 index +
-    // resident frame in place from a delta's change-set instead of nuking and
-    // full-rebuilding — per-edit work drops from O(N) to O(edit size + affected
-    // terms). Returns true on a clean patch; false means the caller must fall back
-    // to invalidateBm25Cache() + warmCaches (a full rebuild). Correctness NEVER
-    // depends on the incremental path: every "can't safely apply" condition (cold
-    // caches, index-shape flip, sidecar hydrate, dim change, missing/mismatched
-    // removal doc, post-patch drift, due compaction) returns false and degrades
-    // to "slow", never "wrong".
-    //
-    // MUST run inside reindexDelta's runExclusive critical section: it mutates
-    // both caches and re-stamps the generation atomically, so a concurrent search
-    // (which waits on coord.currentDelta in ensureFrame) sees either the old cache
-    // or the fully-patched one, never a half-mutated frame. Since removals became
-    // exact (removeExact) there is no in-mutex vacuum — the whole patch is
-    // O(delta), never O(index), so the mutex hold no longer scales with the vault.
     private async applyDelta(
         adds: DeltaAdd[],
         removedIds: string[],
         removedBodies: ReadonlyMap<string, string>,
         metaPatches: ReadonlyArray<{ id: string; meta: ChunkMeta }> = [],
     ): Promise<boolean> {
-        const frame = this.frameCache;
-        const bm = this.bm25Cache;
-        if (!frame || !bm) return this.deltaFallback('cold caches');
-        if (frame.generation !== this.coord.generation
-            || this.bm25CacheGeneration !== this.coord.generation) return this.deltaFallback('stale cache generation');
-        // An index-shape flip changes the BM25 field set → must refit from scratch.
-        if (this.bm25CacheProps !== this.settings.searchableProperties
-            || this.bm25CacheHeadings !== (this.settings.headingsField || this.settings.boostedBm25)) {
-            return this.deltaFallback('index-shape settings changed');
-        }
-        // Sidecar-hydrated rows ARE surfaced in `adds` now (dedupViaSidecar →
-        // hydrateDeps.putQuantized → pushDeltaAdds), so a dedup delta applies
-        // incrementally like any other — no sidecar-specific fallback.
-        // Dim guard: a committed vector whose int8 dim differs from the resident
-        // block's is a model/dim change mid-stream → rebuild. (Model drift normally
-        // defers embeds so `adds` is empty; this guards a partial-stamp index.)
-        if (frame.residentInt8 && adds.some(a => a.q.q.length !== frame.embDim)) {
-            return this.deltaFallback('embedding dim mismatch');
-        }
-
-        // Resolve each removal to its reconstruction doc BEFORE mutating anything:
-        // a missing body (capture skipped or failed in captureRemovalBodies)
-        // declines the patch with the caches completely untouched — the cheapest
-        // possible fallback. Ids with no live row are already gone (the historic
-        // remove(id) tolerance for IDB↔cache divergence) and are skipped.
-        const removals: Array<{ row: number; meta: ChunkMeta; body: string }> = [];
-        for (const id of removedIds) {
-            const row = bm.rowOf(id);
-            if (row === undefined) continue;
-            const body = removedBodies.get(id);
-            if (body === undefined) return this.deltaFallback('removal-body-missing');
-            removals.push({ row, meta: frame.orderedChunks[row], body });
-        }
-
-        // Removes first, then adds: an edit re-commits the SAME content-hash id only
-        // after its stale chunk was dropped, so remove-before-add means mini.add()
-        // never collides with a live duplicate. Rows were captured above BEFORE
-        // removeExact() drops them from idToIdx, so the frame tombstones the right
-        // holes. Wrapped in try/catch for exception safety: a throw mid-patch leaves
-        // the in-place mutation half-applied, so degrade to a full rebuild (the caller
-        // invalidates the suspect caches on a false return and re-warms from IDB,
-        // the source of truth) rather than letting it escape — "slow, never wrong",
-        // and never the crash-loop a thrown bm.add() caused on 2026-06-18.
-        // The adds that actually land after the duplicate filter (declared out here
-        // so the success log reports the true row count, not the pre-filter total).
-        let fresh: DeltaAdd[] = [];
-        // Did this delta touch an alias-bearing note? If not, the synonym
-        // dictionary is provably unchanged and its O(notes) rebuild is skipped at
-        // the commit below (chunkDeclaresAlias). Tracked across BOTH removes (an
-        // alias deletion/edit drops the old alias-bearing row) and adds, so an
-        // alias EDIT — remove-old + add-new — trips it from either side.
-        let aliasDictDirty = false;
-        try {
-            const removeRows: number[] = [];
-            for (const r of removals) {
-                removeRows.push(r.row);
-                if (chunkDeclaresAlias(r.meta)) aliasDictDirty = true;
-                // Exact synchronous removal: postings cleaned NOW from the doc as
-                // indexed (content-addressed body + as-committed frame meta) — no
-                // discard tombstones, no vacuum debt, no first-search df drift. A
-                // 'mismatch' means that reconstruction contract broke; the half-
-                // removed doc makes the whole patch suspect, so decline and let
-                // the caller rebuild from IDB truth.
-                if (bm.removeExact(r.meta, r.body) === 'mismatch') return this.deltaFallback('removal-mismatch');
-            }
-            tombstoneFrameRows(frame, removeRows);
-            // Drop adds whose id is already live in the row space (a hydrate-sourced
-            // duplicate from an IDB↔cache divergence) or repeated within the batch;
-            // see freshDeltaAdds. Runs AFTER the removes so edit re-commits survive.
-            // The SAME list feeds bm.add and appendFrameRows → row spaces stay aligned.
-            fresh = freshDeltaAdds(adds, id => bm.rowOf(id) !== undefined);
-            if (!aliasDictDirty) aliasDictDirty = fresh.some(a => chunkDeclaresAlias(a.chunk));
-            for (const a of fresh) bm.add(a.chunk, a.chunk.content ?? '');
-            appendFrameRows(frame, fresh);
-            // Meta-patches (chunk-diff, issue #5): id-stable chunks whose
-            // BM25-irrelevant metadata drifted (line numbers after an edit above
-            // them, dates). In-place frame row swap — same id, same row, same
-            // vector; BM25 untouched (docFieldsEqual gated upstream). A missing
-            // row means the frame diverged from the engine's view — decline.
-            for (const p of metaPatches) {
-                const row = bm.rowOf(p.id);
-                if (row === undefined) return this.deltaFallback('meta-patch-row-missing');
-                frame.orderedChunks[row] = p.meta;
-            }
-        } catch (e) {
-            // console.* is invisible on mobile (no devtools) — write the NDJSON device
-            // log too, so a recurring patch-throw stays field-observable. That exact
-            // telemetry channel root-caused the 2026-06-18 meltdown; a silent
-            // console.error would now hide any future throw past the L1 filter.
-            console.error('[seek] applyDelta threw mid-patch — dropping to full rebuild', e);
-            void this.logger.appendError('applyDelta-patch', e).catch(() => {});
-            return this.deltaFallback('exception during patch');
-        }
-
-        // Drift detector: verify the row-space coupling survived the patch. On ANY
-        // mismatch, abandon the (suspect) patch — the caller's invalidate+rebuild
-        // makes it "slow, never wrong".
-        if (!frameBm25Coherent(frame, bm)) {
-            console.error('[seek] applyDelta produced an incoherent frame/BM25 row space');
-            return this.deltaFallback('row-space drift');
-        }
-
-        // Compaction: too many tombstone holes → rebuild densely (the amortized O(N)
-        // renumber). Returning false routes that through invalidate+warmCaches.
-        const n = frame.orderedChunks.length;
-        if (n > 0 && frame.tombstoneCount / n >= COMPACTION_TOMBSTONE_FRACTION) {
-            return this.deltaFallback('compaction due', { tombstones: frame.tombstoneCount, rows: n });
-        }
-
-        // Commit: bump the generation so other readers re-validate, then re-stamp
-        // the patched caches to it so the next search hits them (no rebuild).
-        this.coord.bumpGeneration();
-        frame.generation = this.coord.generation;
-        this.stampBm25Cache(bm.size);
-        // Synonym dict derives ONLY from alias-bearing notes (see chunkDeclaresAlias
-        // / buildClasses), so refresh it — over LIVE rows only — when the expansion
-        // toggle is on AND this delta actually touched an alias. A body-only edit
-        // can't change the dictionary, so it skips the O(notes) rebuild. (The
-        // df-ceiling guard then rides slightly stale between alias deltas; it's a
-        // coarse 5% junk filter, refreshed on the next alias-touching delta, full
-        // reindex, or cold lazy build in ensureBm25.)
-        if (this.settings.synonymExpansion && aliasDictDirty) {
-            const liveChunks = frame.tombstoneCount === 0
-                ? frame.orderedChunks
-                : frame.orderedChunks.filter((_, i) => frame.validRows[i]);
-            this.synonymCache = buildSynonymMap(liveChunks, t => bm.termDocFraction(t));
-        }
-        // persistBm25 is no longer skipped here (2026-06-20): the caller re-persists
-        // this patched index after the mutex via maybePersistResidentBm25 (throttled,
-        // embed-free). The old skip assumed a cold stamp would reject the drifted
-        // chunkCount anyway — but the tolerant gate now LOADS it, so keeping the disk
-        // blob fresh is what lets a cold relaunch skip the all-bodies refit.
-        // Report fresh.length (rows that landed), not adds.length — the difference is
-        // duplicates the L1 filter absorbed; surface it so the hydrate-divergence
-        // signal stays visible in the very telemetry used to diagnose this bug class.
-        const filtered = adds.length - fresh.length;
-        if (filtered > 0) console.warn(`[seek] applyDelta absorbed ${filtered} already-live/in-batch duplicate add(s) — hydrate/cache divergence`);
-        return true;
+        return applyDeltaCore({
+            frame: this.frameCache,
+            bm: this.bm25Cache,
+            settings: this.settings,
+            bm25Generation: this.bm25CacheGeneration,
+            bm25Props: this.bm25CacheProps,
+            bm25Headings: this.bm25CacheHeadings,
+            generation: () => this.coord.generation,
+            bumpGeneration: () => this.coord.bumpGeneration(),
+            stamp: n => this.stampBm25Cache(n),
+            setSynonyms: m => { this.synonymCache = m; },
+            fallback: (reason, detail) => this.deltaFallback(reason, detail),
+            logError: (tag, e) => this.logger.appendError(tag, e),
+        }, adds, removedIds, removedBodies, metaPatches);
     }
 
     // Log why the incremental path declined + signal the caller to full-rebuild.
