@@ -1,3 +1,4 @@
+// fork 1.1.3: whole file moved from src/snippet.ts (src/snippet.ts is now a re-export shim)
 // Pure snippet sanitation, extracted from search-modal.ts so it can be
 // unit-tested without Obsidian (same reasoning as ./highlight). No runtime
 // imports — string in, string out.

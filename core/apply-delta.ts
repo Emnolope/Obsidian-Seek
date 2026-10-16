@@ -26,6 +26,7 @@ export interface ApplyCtx {
     logError(tag: string, e: unknown): Promise<void>;
 }
 
+// fork 1.1.3 src/search.ts:2201 SearchOrchestrator.applyDelta
 // Incremental cache maintenance (Seek scaling A1). Mutate the live BM25 index +
 // resident frame in place from a delta's change-set instead of nuking and
 // full-rebuilding — per-edit work drops from O(N) to O(edit size + affected

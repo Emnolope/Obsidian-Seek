@@ -1,3 +1,4 @@
+// fork 1.1.3: whole file moved from src/index-size.ts (src/index-size.ts is now a re-export shim)
 // Phase-0 index-size diagnostic (see "Seek Index Size & Mobile Freeze — Canonical
 // Plan"). Pure, dependency-free byte accounting for the IndexedDB stores, plus a
 // human-readable renderer. The IDB cursor walk that feeds this lives in

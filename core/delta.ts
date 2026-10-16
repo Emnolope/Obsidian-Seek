@@ -5,6 +5,7 @@ import type { MarkdownChunker } from './chunker.ts';
 import { cyrb53Hex } from './chunker.ts';
 import { classifyFileDelta, type FileRecord } from './index-types.ts';
 
+// fork 1.1.3 src/search.ts:142 EXCLUDED_PATHS
 // Vault-root files that are machine-generated and would otherwise pollute the index with constant-touch recency. The mtime on these files moves every time
 // the plugin writes, which means recency=~1.0 → +0.25 lift on every fused score, drowning out actual content matches.
 // A hardcoded list rather than a setting: anything that becomes a recurring "where did my note go" complaint gets added here.
@@ -13,12 +14,14 @@ export const EXCLUDED_PATHS = new Set([
     'seek-report.json',
     'spike-report.md',
 ]);
+// fork 1.1.3 src/search.ts:147 EXCLUDED_PREFIXES
 export const EXCLUDED_PREFIXES = [
     // If someone runs multiple spike variants, the generated reports tend to share these stems.
     'spike-init',
     'seek-init',
 ];
 
+// fork 1.1.3 src/search.ts:187 shouldIndexPath
 // The single index-membership predicate. `isIgnored` is the host's view of the user's "Excluded files" list (Obsidian's matcher in the plugin; the MCP has
 // none unless it reads .obsidian/app.json), so this stays pure and every caller agrees on membership.
 export function shouldIndexByRules(settings: Pick<SeekSettings, 'honorIgnoredFolders'>, path: string, isIgnored: (path: string) => boolean): boolean {
@@ -28,6 +31,7 @@ export function shouldIndexByRules(settings: Pick<SeekSettings, 'honorIgnoredFol
     return true;
 }
 
+// fork 1.1.3 src/search.ts:1573 SearchOrchestrator.chunksFor
 // Content → chunks for one file, branching by extension. A .base file isn't markdown, it's a YAML view definition, so it goes through the host's base
 // extractor (one synthetic doc per view, which needs a YAML parser the host owns) + chunkBase. Every chunk-PRODUCTION site routes through here so the
 // .md/.base split lives in one place and a base chunk's id is identical wherever it is re-derived. `modifiedIso` matches the chunker's `modified` contract.
@@ -80,6 +84,7 @@ export interface DeltaPorts<H = unknown> {
     pluginVersion: string;
 }
 
+// fork 1.1.3 src/search.ts:1586 SearchOrchestrator.computeDelta
 // Diff the persisted index against the live vault, the authoritative idempotent catch-up computation. `dirty` = indexable files whose mtime advanced past
 // the stored record (or were never indexed); `deleted` = previously-indexed paths now gone OR no longer indexable (moved into an ignored folder, or
 // honor-ignored toggled on), since one "not in the live indexable set" test covers both.

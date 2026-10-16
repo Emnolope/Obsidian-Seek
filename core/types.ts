@@ -1,3 +1,4 @@
+// fork 1.1.3: whole file moved from src/types.ts (src/types.ts is now a re-export shim)
 // Core types for Seek. Mirrors the verbose-logging schema from the iOS spike
 // so the same generator/reader code can be reused with minimal changes.
 

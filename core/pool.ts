@@ -1,3 +1,4 @@
+// fork 1.1.3: whole file moved from src/pool.ts (src/pool.ts is now a re-export shim)
 // Stage-1 candidate-pool caps (Seek Retrieval Relevance & Query §Two-Stage
 // ANN → Rerank, the [!done] callout; scaling design = docs/seek-scaling.md "C").
 // The union of the three arms (binary ∪ bm25 ∪ recency) is the working set the

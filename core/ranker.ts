@@ -1,3 +1,4 @@
+// fork 1.1.3: whole file moved from src/ranker.ts (src/ranker.ts is now a re-export shim)
 // Hybrid ranker. Algorithm:
 //   1. dense_norm = TM2C2 theoretical norm of cosine  ((cos+1)/2)
 //   2. bm25_norm  = TM2C2 theoretical norm of BM25     (/ per-query THEORETICAL

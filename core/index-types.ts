@@ -2,23 +2,27 @@
 // IndexedDB itself stays in src/index-store.ts; this file must run anywhere (plugin, MCP, tests).
 import type { Chunk, ChunkMeta } from './types.ts';
 
+// fork 1.1.3 src/index-store.ts:125 META_SCHEMA_VERSION
 // Version of the META RECORD SHAPE (the MetaConfig field set), NOT the IDB store
 // layout above. Written by every setMeta site in search.ts; carried into the
 // identity tuple (identity.ts identityFromMeta → dbVersion) but deliberately not
 // compared by identityMatches. Bump only when MetaConfig's field semantics change.
 export const META_SCHEMA_VERSION = 2;
 
+// fork 1.1.3 src/index-store.ts:130 STORE_NOT_OPENED
 // Thrown by requireDb when the connection is null (closed by onunload, or by an
 // onversionchange from another window/instance deleting the DB). Exported so the
 // indexer's per-file commit catch can recognize it and abort the WHOLE pass fast,
 // instead of logging one identical error per remaining file (the reindex storm).
 export const STORE_NOT_OPENED = 'IndexStore not opened';
+// fork 1.1.3 src/index-store.ts:134 isStoreClosedError
 // Recognize the closed-store error. IndexedDB hands back a plain Error, so this is a
 // message match — kept in ONE place (next to the thrower) so the indexer's "abort the
 // whole pass on a closed store" check can't drift from requireDb's wording.
 export function isStoreClosedError(e: unknown): boolean {
     return e instanceof Error && e.message === STORE_NOT_OPENED;
 }
+// fork 1.1.3 src/index-store.ts:141 isQuotaError
 // Recognize the browser's storage-quota error (disk/IDB quota exhausted). IndexedDB
 // surfaces it as a DOMException named 'QuotaExceededError' on the failed write.
 // Matched by name, not instanceof: the error may originate in another realm
@@ -27,6 +31,7 @@ export function isQuotaError(e: unknown): boolean {
     return typeof e === 'object' && e !== null && (e as { name?: unknown }).name === 'QuotaExceededError';
 }
 
+// fork 1.1.3 src/index-store.ts:203 FileRecord
 export interface FileRecord {
     note_path: string;
     mtimeMs: number;
@@ -56,6 +61,7 @@ export interface FileRecord {
     embedFailPluginVersion?: string; // build that recorded the failure
 }
 
+// fork 1.1.3 src/index-store.ts:238 findOrphanChunkIds
 // Referential-integrity orphan finder: chunk_ids present in the index but
 // referenced by NO FILES record. Orphans are a file's chunks left behind when its
 // record was overwritten (hydrate / applyDelta replacing a changed note's ids) or
@@ -66,6 +72,7 @@ export function findOrphanChunkIds(allChunkIds: string[], referenced: ReadonlySe
     return allChunkIds.filter(id => !referenced.has(id));
 }
 
+// fork 1.1.3 src/index-store.ts:254 DeltaDecision
 // Pure per-file delta classification — the single source of truth for the
 // "is this file dirty?" rule, exported so it can be unit-tested without an
 // IndexStore or Vault. computeDelta consults it twice: once on cheap metadata
@@ -79,6 +86,7 @@ export function findOrphanChunkIds(allChunkIds: string[], referenced: ReadonlySe
 //   'check-bytes' — mtime moved on a hash-bearing record; the caller must read
 //                   the bytes, hash them, and re-call with `liveHash`.
 export type DeltaDecision = 'dirty' | 'clean' | 'check-bytes';
+// fork 1.1.3 src/index-store.ts:255 classifyFileDelta
 export function classifyFileDelta(
     prev: Pick<FileRecord, 'mtimeMs' | 'contentHash' | 'embedFailPluginVersion'> | undefined,
     liveMtime: number,
@@ -104,6 +112,7 @@ export function classifyFileDelta(
     return liveHash === prev.contentHash ? 'clean' : 'dirty';
 }
 
+// fork 1.1.3 src/index-store.ts:280 MetaConfig
 export interface MetaConfig {
     embeddingDim: number;
     lastIndexedAt: string | null;
@@ -136,6 +145,7 @@ export interface MetaConfig {
     bgStd?: number;
 }
 
+// fork 1.1.3 src/index-store.ts:546 stripContent
 // Project a Chunk to its metadata (everything except the body) for the
 // chunk_meta store; the body is stored separately in chunk_body. The rest-
 // capture tracks Chunk automatically as fields are added.
@@ -145,6 +155,7 @@ export function stripContent(c: Chunk): ChunkMeta {
     return meta;
 }
 
+// fork 1.1.3 src/identity.ts:26 IndexIdentity
 export interface IndexIdentity {
     dbVersion: number; // IndexedDB schema (index-store.ts) — enforced natively by IDB's onupgradeneeded
     chunkerVersion: number; // chunk content+suffix derivation (chunker.ts) — feeds both embed bytes AND chunk_id
@@ -155,6 +166,7 @@ export interface IndexIdentity {
     dim: number; // embedding dimension (embedder.ts)
 }
 
+// fork 1.1.3 src/identity.ts:117 shouldStampLiveIdentity
 // Should an index-write pass STAMP the live build identity into its meta (and refit
 // the dense-cosine background), versus carry the prior meta's fields forward unchanged?
 //

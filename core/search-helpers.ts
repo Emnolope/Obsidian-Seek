@@ -6,6 +6,7 @@ import { LEGACY_ENGLISH_MODEL_ID } from './contract.ts';
 import type { QuantVec } from './quant.ts';
 import { passageWindow, type PassageTerm } from './passage.ts';
 
+// fork 1.1.3 src/search.ts:4516 alignCandidate
 // Assemble the resident int8 rerank block for a frame. For each chunk_id in
 // `orderedIds` (frame row order, already orphan-filtered by ensureFrame), copy
 // its stored int8 components into a contiguous Int8Array and its scale into a
@@ -46,6 +47,7 @@ export function alignCandidate(
     return { chunk: missingFp32 ? { ...ch, lexicalOnly: true } : ch, missingFp32 };
 }
 
+// fork 1.1.3 src/search.ts:4526 buildResidentRerankBlock
 export function buildResidentRerankBlock(
     orderedIds: string[],
     embById: Map<string, QuantVec>,
@@ -66,6 +68,7 @@ export function buildResidentRerankBlock(
     return { int8, scales, embDim };
 }
 
+// fork 1.1.3 src/search.ts:4556 ResidentFrame
 // ── Resident frame (Seek scaling A1) ─────────────────────────────────────────
 // The query-time row space. All tiers are aligned row-for-row: row i is
 // orderedChunks[i] / orderedIds[i] / activePacked[i*bytesPerVec…] /
@@ -89,6 +92,7 @@ export interface ResidentFrame {
     generation: number;
 }
 
+// fork 1.1.3 src/search.ts:4573 DeltaAdd
 // One committed chunk's data needed to append it to the live frame + BM25 index.
 // reindexDelta already holds exactly this at commit time (commitFile derives
 // {q, bin} from the fp32 vector; fs.chunks still carry content): the change-set
@@ -99,6 +103,7 @@ export interface DeltaAdd {
     bin: Uint8Array;    // sign-bit binary tier (activePacked row)
 }
 
+// fork 1.1.3 src/search.ts:4589 chunkMetaEqual
 // Append committed chunks + their derived tiers to a change-set sink. Shared by
 // BOTH commit paths so they surface identically into applyDelta: commitFile
 // (model-embedded, derived = quantizeInt8/packSignBits) and the sidecar hydrate
@@ -113,12 +118,14 @@ export function chunkMetaEqual(a: ChunkMeta, b: ChunkMeta): boolean {
     return JSON.stringify(a) === JSON.stringify(b);
 }
 
+// fork 1.1.3 src/search.ts:4593 pushDeltaAdds
 export function pushDeltaAdds(sink: DeltaAdd[], chunks: Chunk[], tiers: { q: QuantVec; bin: Uint8Array }[]): void {
     for (let i = 0; i < chunks.length; i++) {
         sink.push({ chunk: chunks[i], q: tiers[i].q, bin: tiers[i].bin });
     }
 }
 
+// fork 1.1.3 src/search.ts:4619 freshDeltaAdds
 // Narrow a delta's adds to those NOT already live in the BM25 row space, and drop
 // any within-batch duplicate ids. THE guard for the 2026-06-18 mobile meltdown:
 // hydrate-sourced adds (scaling A1) can carry a chunk_id that is already live in
@@ -151,6 +158,7 @@ export function freshDeltaAdds(adds: DeltaAdd[], isLive: (id: string) => boolean
     return out;
 }
 
+// fork 1.1.3 src/search.ts:4632 frameMetaOf
 // Strip body text for the metadata-only frame (mirrors index-store.stripContent).
 function frameMetaOf(c: Chunk): ChunkMeta {
     const { content, ...meta } = c;
@@ -158,6 +166,7 @@ function frameMetaOf(c: Chunk): ChunkMeta {
     return meta;
 }
 
+// fork 1.1.3 src/search.ts:4648 appendFrameRows
 // Append committed chunks to a live frame IN PLACE. One realloc of the contiguous
 // tiers per BURST (not per chunk): a ~R-byte copy, negligible beside the O(N)
 // BM25 fit() the incremental path eliminates. The binary + metadata tiers grow
@@ -200,6 +209,7 @@ export function appendFrameRows(frame: ResidentFrame, adds: DeltaAdd[]): void {
     }
 }
 
+// fork 1.1.3 src/search.ts:4683 tombstoneFrameRows
 // Tombstone rows (mark not-live). The contiguous tiers keep their bytes (holes);
 // validRows masks them out at selection, browse, and recency. Idempotent and
 // bounds-guarded so a stale/duplicate row can't drive tombstoneCount negative.
@@ -212,6 +222,7 @@ export function tombstoneFrameRows(frame: ResidentFrame, rows: number[]): void {
     }
 }
 
+// fork 1.1.3 src/search.ts:4698 buildSelectionMask
 // Per-row selection mask = live rows (validRows) AND the optional inline-filter
 // matcher. Returns undefined ONLY when the frame is fully live AND there's no
 // matcher — the byte-identical no-filter fast path. Otherwise a defined mask,
@@ -233,12 +244,15 @@ export function buildSelectionMask(
     return mask;
 }
 
+// fork 1.1.3 src/search.ts:4716 COMPACTION_TOMBSTONE_FRACTION
 // Compaction fires when this fraction of rows are tombstones — the amortized O(N)
 // renumber that keeps the frame from growing unbounded with holes (a full rebuild
 // produces a dense, fully-live frame).
 export const COMPACTION_TOMBSTONE_FRACTION = 0.25;
+// fork 1.1.3 src/search.ts:4718 COHERENCE_SAMPLES
 // Rows sampled by the drift detector's id↔row spot-check (the warm-build verify path checks all).
 export const COHERENCE_SAMPLES = 8;
+// fork 1.1.3 src/search.ts:4724 COHERENCE_DRIFT_COOLDOWN_MS
 // Circuit breaker for onCoherenceDrift: a drift that re-trips within this window of
 // the last rebuild is treated as PERSISTENT (not a one-off), so the expensive
 // re-warm + the user Notice are suppressed to break the thrash. The cache is still
@@ -246,6 +260,7 @@ export const COHERENCE_SAMPLES = 8;
 // Without this, one bad delta drove an unbounded toast+rebuild loop (2026-06-18).
 export const COHERENCE_DRIFT_COOLDOWN_MS = 30_000;
 
+// fork 1.1.3 src/search.ts:4732 coherenceDriftDecision
 // Pure decision for that circuit breaker, extracted so it's unit-testable without a
 // live SearchOrchestrator (onCoherenceDrift is a private method with heavy deps).
 // invalidate is ALWAYS true — a mis-coupled frame/BM25 must never serve, and the
@@ -258,6 +273,7 @@ export function coherenceDriftDecision(
     return { invalidate: true, warm: now - lastWarmAt >= cooldownMs };
 }
 
+// fork 1.1.3 src/search.ts:4744 shouldDiscardPartialFrame
 // F2 guard, extracted so ensureFrame's "don't cache a partial frame as fresh"
 // invariant has a named, directly-tested home. A frame assembled at buildGen must
 // be discarded (rebuilt) when the index generation advanced while we were reading:
@@ -268,6 +284,7 @@ export function shouldDiscardPartialFrame(buildGen: number, currentGen: number):
     return currentGen !== buildGen;
 }
 
+// fork 1.1.3 src/search.ts:4756 DriftRecoveryState
 // Pure decision for the plugin's drift-recovery scheduler: escalate an embed-free
 // recovery for THIS index state, or not. The suppression is generation-keyed — a
 // degraded index re-trips drift on every keystroke, but currentGen only advances on
@@ -282,12 +299,14 @@ export interface DriftRecoveryState {
     lastRecoveryGen: number;   // generation we last escalated for; -1 = never
     currentGen: number;
 }
+// fork 1.1.3 src/search.ts:4762 driftRecoveryDecision
 export function driftRecoveryDecision(s: DriftRecoveryState): { schedule: boolean } {
     if (s.running) return { schedule: false };
     if (s.currentGen === s.lastRecoveryGen) return { schedule: false };
     return { schedule: true };
 }
 
+// fork 1.1.3 src/search.ts:4771 RowSpaceProbe
 // The BM25 surface the drift detector reads — MultiFieldBM25 satisfies it
 // structurally (get size / get liveCount / rowOf). Decoupled as an interface so
 // the detector is a pure, engine-free unit test target.
@@ -297,6 +316,7 @@ export interface RowSpaceProbe {
     rowOf(id: string): number | undefined;
 }
 
+// fork 1.1.3 src/search.ts:4785 frameBm25Coherent
 // Row-space coherence between the frame and the BM25 index — THE fragile invariant
 // of the incremental path. At query time a single `idx` indexes orderedChunks[idx]
 // / activePacked[idx] / residentInt8[idx] / bm25Scores[idx] together, so if their
@@ -322,6 +342,7 @@ export function frameBm25Coherent(frame: ResidentFrame, probe: RowSpaceProbe, fu
     return true;
 }
 
+// fork 1.1.3 src/search.ts:4819 Bm25PersistStamp
 // Identity of a persisted MiniSearch index — what must match for a stored blob
 // to be loadable instead of refit. Two classes of input:
 //   - analyzerVersion: a build-time content hash of the analyzer sources
@@ -349,6 +370,7 @@ export interface Bm25PersistStamp {
     headings: boolean;
 }
 
+// fork 1.1.3 src/search.ts:4829 buildBm25Stamp
 export function buildBm25Stamp(meta: { modelId?: string; embeddingDim: number; lastIndexedAt: string | null }, chunkCount: number, settings: SeekSettings): Bm25PersistStamp {
     return {
         analyzerVersion: ANALYZER_VERSION,
@@ -361,6 +383,7 @@ export function buildBm25Stamp(meta: { modelId?: string; embeddingDim: number; l
     };
 }
 
+// fork 1.1.3 src/search.ts:4841 bm25StampMatches
 export function bm25StampMatches(stored: unknown, live: Bm25PersistStamp): boolean {
     if (!stored || typeof stored !== 'object') return false;
     const s = stored as Partial<Bm25PersistStamp>;
@@ -386,6 +409,7 @@ export function bm25StampMatches(stored: unknown, live: Bm25PersistStamp): boole
         && s.headings === live.headings;
 }
 
+// fork 1.1.3 src/search.ts:4869 dedupByPath
 // File-level dedup: walk the ranked pool, keep the first (highest-scoring)
 // chunk per note_path, stop at topK unique notes. Shared by the main search
 // path and the filter-only fast path.
@@ -401,12 +425,14 @@ export function dedupByPath(rankedPool: ScoredChunk[], topK: number): ScoredChun
     return out;
 }
 
+// fork 1.1.3 src/search.ts:4881 topKByScore
 export function topKByScore(scores: Float64Array, chunks: ChunkMeta[], k: number): Array<{ chunk_id: string; score: number }> {
     const indices = Array.from({ length: scores.length }, (_, i) => i);
     indices.sort((a, b) => scores[b] - scores[a]);
     return indices.slice(0, k).map(i => ({ chunk_id: chunks[i].chunk_id, score: scores[i] }));
 }
 
+// fork 1.1.3 src/search.ts:4901 snippetPlainText
 // Project a chunk to the plain text a reader would see, collapsing markdown
 // link/embed syntax to its display text. Run BEFORE the snippet window is
 // chosen so a query term that exists only inside a URL (e.g. the `style` in
@@ -431,6 +457,7 @@ export function snippetPlainText(md: string): string {
         .replace(/\[([^\]]*?)\]\([^)]*?\)/g, '$1');  // [text](url) → text
 }
 
+// fork 1.1.3 src/search.ts:4917 makeSnippet
 // Window selection is passage scoring (passage.ts): BM25 over sentences with
 // the live index's IDF, so the snippet shows the sentence that best explains
 // the LEXICAL half of why this chunk ranked — not the earliest raw substring

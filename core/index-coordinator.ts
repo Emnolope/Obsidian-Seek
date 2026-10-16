@@ -1,3 +1,4 @@
+// fork 1.1.3: whole file moved from src/index-coordinator.ts (src/index-coordinator.ts is now a re-export shim)
 // Shared index-mutation coordination, factored out of SearchOrchestrator so the
 // indexing and searching halves can be split apart while still sharing exactly the
 // state that couples them. They share STATE, not behavior — hence a plain holder

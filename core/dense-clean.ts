@@ -1,3 +1,4 @@
+// fork 1.1.3: whole file moved from src/dense-clean.ts (src/dense-clean.ts is now a re-export shim)
 // Dense-channel text hygiene (Seek v8, 2026-06-28).
 //
 // The dense embed input is `title\n\ncontent\n\nsuffix` (token-budget.ts

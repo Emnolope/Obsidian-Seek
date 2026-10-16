@@ -1,3 +1,4 @@
+// fork 1.1.3: whole file moved from src/binary.ts (src/binary.ts is now a re-export shim)
 // Sign-bit binary index + asymmetric scoring for stage-1 candidate generation.
 //
 // The validated form (Seek Retrieval Relevance & Query.md §Two-Stage ANN → Rerank):

@@ -1,3 +1,4 @@
+// fork 1.1.3: whole file moved from src/passage.ts (src/passage.ts is now a re-export shim)
 // Lexical passage scoring for snippet-window selection — the sync half of the
 // "better highlighting" plan ([[Seek Better Highlighting Research]] 2026-07-06).
 //

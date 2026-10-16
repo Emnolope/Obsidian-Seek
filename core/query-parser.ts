@@ -1,3 +1,4 @@
+// fork 1.1.3: whole file moved from src/query-parser.ts (src/query-parser.ts is now a re-export shim)
 // Inline query-syntax parser + chunk filter matcher.
 //
 // A native TS port of the predecessor Python backend's proven filter layer

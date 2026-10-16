@@ -1,3 +1,4 @@
+// fork 1.1.3: whole file moved from src/prop-normalize.ts (src/prop-normalize.ts is now a re-export shim)
 // Two-surfaces normalization for frontmatter property VALUES.
 //
 // Every property value has exactly two legitimate canonical forms, and the bug

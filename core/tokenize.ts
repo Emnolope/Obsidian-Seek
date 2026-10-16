@@ -1,3 +1,4 @@
+// fork 1.1.3: whole file moved from src/tokenize.ts (src/tokenize.ts is now a re-export shim)
 // Shared lexical tokenization — the CJK 80/20 (2026-06-10).
 //
 // MiniSearch's default tokenizer splits on whitespace + Unicode punctuation

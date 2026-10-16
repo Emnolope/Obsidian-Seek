@@ -1,3 +1,4 @@
+// fork 1.1.3: whole file moved from src/token-budget.ts (src/token-budget.ts is now a re-export shim)
 // WS2.3 token-budget enforcement — the index-side correctness invariant.
 //
 // The dense channel embeds `title\n\ncontent` through a seq ladder capped at

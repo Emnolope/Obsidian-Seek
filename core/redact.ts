@@ -1,3 +1,4 @@
+// fork 1.1.3: whole file moved from src/redact.ts (src/redact.ts is now a re-export shim)
 // Report redaction — the privacy valve on shared diagnostics (issue #5).
 //
 // The diagnostic report is the one artifact users are asked to paste into a

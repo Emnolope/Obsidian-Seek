@@ -17,6 +17,7 @@ export interface DiffStore {
     putChunkMetas(metas: ChunkMeta[]): Promise<void>;
 }
 
+// fork 1.1.3 src/search.ts:2111 SearchOrchestrator.diffFileAgainstStore
 // Chunk-diff plan for one dirty file (issue #5). Returns null when there is
 // no stored record (new file) — the caller embeds everything. On a plan:
 // stale rows are deleted (bodies captured first for the exact-removal
@@ -115,6 +116,7 @@ export async function planFileDiff(
     return { keepIds, embedIds };
 }
 
+// fork 1.1.3 src/search.ts:2080 SearchOrchestrator.captureRemovalBodies
 // Capture a file's chunk bodies BEFORE deleteFile() drops them from IDB, so
 // applyDelta can reconstruct each removed doc for removeExact(). Chunk ids
 // are content hashes, so a captured body is byte-identical to what add()

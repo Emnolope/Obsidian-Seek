@@ -1,3 +1,4 @@
+// fork 1.1.3: whole file moved from src/chunker.ts (src/chunker.ts is now a re-export shim)
 // Hierarchical Markdown Chunker — originally ported from
 // python-backend/app/search/chunker.py, rewritten structure-aware for WS3.
 //

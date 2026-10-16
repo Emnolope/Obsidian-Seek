@@ -1,3 +1,4 @@
+// fork 1.1.3: whole file moved from src/bm25.ts (src/bm25.ts is now a re-export shim)
 // Multi-field BM25 over chunks, backed by MiniSearch.
 //
 // History (see [[Seek Plugin - Initial Implementation Status]] Open Decision 2):

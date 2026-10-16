@@ -1,3 +1,4 @@
+// fork 1.1.3: whole file moved from src/select.ts (src/select.ts is now a re-export shim)
 // Bounded top-N index selection without a full-length sort.
 //
 // Stage-1 candidate generation selects the top-N of each arm (binary 200, BM25

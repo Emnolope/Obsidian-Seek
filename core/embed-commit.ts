@@ -15,6 +15,7 @@ import { isStoreClosedError, isQuotaError, META_SCHEMA_VERSION, shouldStampLiveI
 import { pushDeltaAdds, type DeltaAdd } from './search-helpers.ts';
 import { planFileDiff, captureRemovalBodies, type DiffStore } from './file-diff.ts';
 
+// fork 1.1.3 src/search.ts:80 ROLLING_BUDGET
 // Indexing batches via PER-BUCKET ROLLING BUFFERS (2026-06-03 redesign).
 //
 // The problem: naive within-file batching ran an effective batch of ~2.2
@@ -50,7 +51,9 @@ import { planFileDiff, captureRemovalBodies, type DiffStore } from './file-diff.
 // the warmed ceiling (also mobile's thermal-friendly flush size). Lower the
 // budget to cut the p95 further (more dispatches); raise it for throughput.
 export const ROLLING_BUDGET = 512;
+// fork 1.1.3 src/search.ts:81 ROLLING_MAX
 export const ROLLING_MAX = 8;
+// fork 1.1.3 src/search.ts:90 rollingBatchFor
 // WASM batch experiment CLOSED (2026-06-11): a flat batch of 4 on the CPU EP
 // measured a WASH against this token-budget sizing (3.60 vs 3.83 files/s on
 // the same 365-file steady segment, iPhone 15 Pro) — per-call overhead is not
@@ -63,13 +66,16 @@ export function rollingBatchFor(bucket: number): number {
     return Math.max(1, Math.min(ROLLING_MAX, Math.round(ROLLING_BUDGET / bucket)));
 }
 
+// fork 1.1.3 src/search.ts:95 PROGRESS_EVERY
 // How often to emit a progress entry during indexing (every N committed files).
 export const PROGRESS_EVERY = 25;
+// fork 1.1.3 src/search.ts:99 PROGRESS_MAX_SILENCE_MS
 // Time floor for the progress cadence: never let the counter sit silent
 // longer than this while files are committing (see the cadence comment at
 // the emit site — two healthy iPhone WASM runs were force-quit as "stalled").
 export const PROGRESS_MAX_SILENCE_MS = 2500;
 
+// fork 1.1.3 src/search.ts:109 FULL_PREEMPT_POLL_MS
 // Full-reindex soft preempt: while the user is typing in the search modal or a
 // query embed is in flight (budget.shouldContinue → false), a FULL pass pauses
 // between files instead of competing for the iframe/GPU — then resumes; it never
@@ -79,7 +85,9 @@ export const PROGRESS_MAX_SILENCE_MS = 2500;
 // The per-episode cap is a wedge guard only: searchActive self-heals after 60 s
 // (SEARCH_ACTIVE_MAX_AGE_MS), so the cap should never bind in a healthy session.
 export const FULL_PREEMPT_POLL_MS = 250;
+// fork 1.1.3 src/search.ts:110 FULL_PREEMPT_MAX_WAIT_MS
 export const FULL_PREEMPT_MAX_WAIT_MS = 2 * 60_000;
+// fork 1.1.3 src/search.ts:118 FULL_PREEMPT_WEDGE_EPISODES
 // Consecutive episode-cap expiries (with the signal never once observed true)
 // before the pass treats the preempt signal as wedged and stops pausing. One
 // expiry can be a genuinely busy user refreshing searchActive; three in a row
@@ -89,6 +97,7 @@ export const FULL_PREEMPT_MAX_WAIT_MS = 2 * 60_000;
 // a large full reindex into hours while holding the write mutex.
 export const FULL_PREEMPT_WEDGE_EPISODES = 3;
 
+// fork 1.1.3 src/search.ts:213 SidecarFlushJob
 // 1C: an index pass's deferred sidecar flush. embedAndCommitFiles always runs
 // inside the write mutex; instead of flushing the sidecar there (pure file IO the
 // IDB index never depends on), it packages everything the flush needs and the
@@ -141,6 +150,7 @@ export interface EmbedCommitCtx<H> {
     emitProgress(phase: 'embed' | 'commit' | string, filesSeen: number, filesTotal: number, chunksEmitted: number, elapsedMs: number): Promise<void>;
 }
 
+// fork 1.1.3 src/search.ts:578 SearchOrchestrator.embedAndCommitFiles
 // The shared embed + commit engine behind both reindexAll (whole vault, after
 // nuke) and reindexDelta (just the changed files, after their stale chunks are
 // dropped). Per-bucket rolling-buffer batching, atomic per-file commit, the

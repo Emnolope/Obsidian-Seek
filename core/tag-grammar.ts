@@ -1,3 +1,4 @@
+// fork 1.1.3: whole file moved from src/tag-grammar.ts (src/tag-grammar.ts is now a re-export shim)
 // The ONE definition of what an Obsidian tag looks like, shared by the query
 // side (query-parser INLINE_FILTER_RE — `#tag` / `tag:x` filters) and the doc
 // side (chunker → extractInlineTags below). Keeping both sides on the same

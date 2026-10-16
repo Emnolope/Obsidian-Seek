@@ -1,3 +1,4 @@
+// fork 1.1.3: whole file moved from src/quant.ts (src/quant.ts is now a re-export shim)
 // Int8 scalar quantization (SQ8) for the fp32 exact-rerank tier.
 //
 // Why: the `embeddings` store held one Float32Array(d) per chunk (1536 B at

@@ -1,3 +1,4 @@
+// fork 1.1.3: whole file moved from src/synonyms.ts (src/synonyms.ts is now a re-export shim)
 // Query-side alias-dictionary synonym expansion (v1, default OFF).
 //
 // Motivation (eval pack 2026-06-10, alias_expansion.py + prefix_arm.py): a

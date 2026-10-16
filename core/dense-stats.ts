@@ -1,3 +1,4 @@
+// fork 1.1.3: whole file moved from src/dense-stats.ts (src/dense-stats.ts is now a re-export shim)
 // Corpus-level dense-cosine background statistics for the corpus-AGNOSTIC
 // display calibration + answerability gate.
 //

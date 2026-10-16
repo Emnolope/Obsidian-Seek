@@ -1,3 +1,4 @@
+// fork 1.1.3: whole file moved from src/fusion.ts (src/fusion.ts is now a re-export shim)
 // Score fusion, recency, and title-match boost.
 // Direct port of python-backend/app/search/fusion.py and the title-boost helper
 // in ranker.py. Coefficients match the live Python backend's defaults.

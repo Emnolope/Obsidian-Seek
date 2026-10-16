@@ -1,3 +1,4 @@
+// fork 1.1.3: whole file moved from src/highlight.ts (src/highlight.ts is now a re-export shim)
 // Pure computation for the in-note match-highlight flash, factored out of
 // search-modal.ts so it is unit-testable without Obsidian. buildMatchHighlight
 // resolves the chunk window and hands the raw note text here; this module finds

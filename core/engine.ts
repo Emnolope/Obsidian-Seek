@@ -16,6 +16,7 @@ import { parseQuery, compileMatcher, excludedNotePaths } from './query-parser.ts
 import { buildPassageTerms } from './passage.ts';
 import { alignCandidate, buildSelectionMask, frameBm25Coherent, dedupByPath, topKByScore, makeSnippet, type ResidentFrame } from './search-helpers.ts';
 
+// fork 1.1.3 src/search.ts:202 RecencyOverride
 // Per-call override of the recency knobs; a call argument, never written into settings, so concurrent searches can't see each other's override.
 export interface RecencyOverride {
     epsilon?: number;
@@ -47,12 +48,14 @@ export interface SearchHost {
     logError(tag: string, err: Error): Promise<void>;
 }
 
+// fork 1.1.3 src/search.ts:4371 SearchOrchestrator.hydrateBodies
 async function hydrateBodies(host: SearchHost, results: ScoredChunk[]): Promise<void> {
     if (results.length === 0) return;
     const bodies = await host.bodies(results.map(r => r.chunk_id));
     for (let i = 0; i < results.length; i++) results[i].content = bodies[i] ?? '';
 }
 
+// fork 1.1.3 src/search.ts:4377 SearchOrchestrator.topByRecency
 // Pick top-K chunks by recency descending, keyed on the vault's recencyKey setting through the SHARED recencyDate accessor (fusion.ts), the same source
 // the ranker's ε-tiebreaker and browseOrder read, so the candidate ARM admits the same notes the scorer rewards. (The 06-07 lesson: a key change applied
 // to the scorer but not the arm pulls in candidates the ranker then scores as old.) Skips chunks with no parseable date: this arm is additive recall
@@ -70,6 +73,7 @@ function topByRecency(settings: SeekSettings, chunks: ChunkMeta[], k: number, ma
     return selectTopNIndices(n, k, i => dates[i], i => !Number.isNaN(dates[i]));
 }
 
+// fork 1.1.3 src/search.ts:4395 SearchOrchestrator.emptySearchEntry
 function emptySearchEntry(
     settings: SeekSettings, query: string, cleanedQuery: string, filters: QueryFilters | null,
     topK: number, searchId: string, idbReadMs: number, totalMs: number,
@@ -103,6 +107,7 @@ function emptySearchEntry(
     };
 }
 
+// fork 1.1.3 src/search.ts:3307 SearchOrchestrator.search
 // Search path (two-stage, v7+):
 //
 //   S0  resident frame (corpus + binary index, cached by dataGeneration —

@@ -1,3 +1,4 @@
+// fork 1.1.3: whole file moved from src/task-context.ts (src/task-context.ts is now a re-export shim)
 // TaskContextTracker — attributes PerformanceObserver longtask entries to the
 // plugin phase that was running WHEN THE TASK RAN, not when the entry was
 // DELIVERED. The old stack read the top-of-stack at observer-callback time,

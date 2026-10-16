@@ -1,3 +1,4 @@
+// fork 1.1.3: whole file moved from src/atoms.ts (src/atoms.ts is now a re-export shim)
 // WS3 atomic-unit parser — the structure-aware boundary layer.
 //
 // Splitting markdown at /\n\n+/ (the pre-WS3 unit boundary in both the
