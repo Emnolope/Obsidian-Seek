@@ -25,7 +25,3 @@ Procedure: `git merge -s ours --no-commit ryan/main`, then port `git diff <last-
 | 2026-10-17 | 1.2.0, 1.2.1 (`b2cb183`) | Pause/resume indexing (`embed-commit`), link-dictionary synonyms v2 (`apply-delta`, `engine`, `core/link-dict.ts`), `RecencyOverride` renamed `SearchOverride`, `ExperimentOverride` added. |
 
 Files born after the fork point carry `// fork 1.2.1 ...`. `src/link-dict.ts` is split: the pure half is `core/link-dict.ts`, the Obsidian-reaching miners stay in `src/link-dict.ts`.
-
-## Resident caches (2026-10-17)
-
-`core/resident-index.ts` (`ResidentIndex`) holds what were SearchOrchestrator's cache fields and methods: frame, binary index, BM25 + persist/cross-device, synonyms/phrases, warm, invalidate. Its header lists the field renames. Orchestrator members of the same names are now one-line proxies (`src/search.ts`, "Cache layer lives in core/resident-index.ts"). To port an upstream change to any of those methods, grep `core/resident-index.ts` for its `fork` pointer.

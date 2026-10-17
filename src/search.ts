@@ -1045,7 +1045,7 @@ export class SearchOrchestrator {
             bm25Headings: this.bm25CacheHeadings,
             generation: () => this.coord.generation,
             bumpGeneration: () => this.coord.bumpGeneration(),
-            stamp: n => this.res.stampBm25(n),
+            stamp: n => this.res.stampBm25Cache(n),
             setSynonyms: m => { this.synonymCache = m; },
             // fork 1.2.1 src/search.ts:2379 SearchOrchestrator.applyDelta (link-pair patch; the mining is host-side, so it lives here not in core)
             patchLinkPairs: touchedPaths => {
@@ -2093,28 +2093,28 @@ export class SearchOrchestrator {
         };
     }
 
-    private get frameCache() { return this.res.frame; }
-    private set frameCache(v) { this.res.frame = v; }
-    private get bm25Cache() { return this.res.bm25; }
-    private set bm25Cache(v) { this.res.bm25 = v; }
-    private get bm25CacheGeneration() { return this.res.bm25Gen; }
-    private get bm25CacheProps() { return this.res.bm25Props; }
-    private get bm25CacheHeadings() { return this.res.bm25Headings; }
-    private get synonymCache() { return this.res.synonyms; }
-    private set synonymCache(v) { this.res.synonyms = v; }
-    private get linkPairCache() { return this.res.linkPairs; }
-    private set bgStatsGen(v: number) { this.res.bgGen = v; }
+    private get frameCache() { return this.res.frameCache; }
+    private set frameCache(v) { this.res.frameCache = v; }
+    private get bm25Cache() { return this.res.bm25Cache; }
+    private set bm25Cache(v) { this.res.bm25Cache = v; }
+    private get bm25CacheGeneration() { return this.res.bm25CacheGeneration; }
+    private get bm25CacheProps() { return this.res.bm25CacheProps; }
+    private get bm25CacheHeadings() { return this.res.bm25CacheHeadings; }
+    private get synonymCache() { return this.res.synonymCache; }
+    private set synonymCache(v) { this.res.synonymCache = v; }
+    private get linkPairCache() { return this.res.linkPairCache; }
+    private set bgStatsGen(v: number) { this.res.bgStatsGen = v; }
 
     private ensureFrame() { return this.res.ensureFrame(); }
     private ensureBm25(c: ChunkMeta[]) { return this.res.ensureBm25(c); }
-    private bm25CacheValid(c: ChunkMeta[]) { return this.res.bm25Valid(c); }
-    private ensurePhraseCache() { return this.res.ensurePhrases(); }
-    private bm25FieldBoosts() { return this.res.boosts(); }
-    private getDenseBgStats() { return this.res.denseBg(); }
-    private tryLoadPersistedBm25(c: ChunkMeta[]) { return this.res.tryLoadPersisted(c); }
-    private tryLoadCrossDeviceBm25(c: ChunkMeta[]) { return this.res.tryLoadCrossDevice(c); }
-    private maybePersistResidentBm25() { this.res.maybePersistResident(); }
-    warmCaches(trigger: string): Promise<void> { return this.res.warm(trigger); }
+    private bm25CacheValid(c: ChunkMeta[]) { return this.res.bm25CacheValid(c); }
+    private ensurePhraseCache() { return this.res.ensurePhraseCache(); }
+    private bm25FieldBoosts() { return this.res.bm25FieldBoosts(); }
+    private getDenseBgStats() { return this.res.getDenseBgStats(); }
+    private tryLoadPersistedBm25(c: ChunkMeta[]) { return this.res.tryLoadPersistedBm25(c); }
+    private tryLoadCrossDeviceBm25(c: ChunkMeta[]) { return this.res.tryLoadCrossDeviceBm25(c); }
+    private maybePersistResidentBm25() { this.res.maybePersistResidentBm25(); }
+    warmCaches(trigger: string): Promise<void> { return this.res.warmCaches(trigger); }
     // Name kept for main.ts: it drops every generation-keyed cache, not just BM25.
-    invalidateBm25Cache(): void { this.res.invalidate(); }
+    invalidateBm25Cache(): void { this.res.invalidateBm25Cache(); }
 }

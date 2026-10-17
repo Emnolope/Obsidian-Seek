@@ -39,7 +39,7 @@ E. His original Seek complaints: could not delete vectors held in IndexedDB; des
 F. Housekeeping: mcp/ docs still describe the old two-repo layout and /workspaces/Obsidian-Seek; HANDOFF.md in mcp/ is stale; Obsidian-Seek-MCP repo's fate undecided (now just a pointer).
 
 ## Provenance (READ PROVENANCE.md)
-Every lifted function needs a `// fork <tag> src/FILE.ts:LINE Class.method` pointer, pinned to tag line numbers (find them with `git show 1.1.3:src/search.ts | grep -n`). A new file without pointers is unmaintainable for the next upstream merge. Do this in the same commit as the move.
+Every lifted function needs a `// fork <tag> src/FILE.ts:LINE Class.method` pointer, pinned to tag line numbers (find them with `git show 1.1.3:src/search.ts | grep -n`). A new file without pointers is unmaintainable for the next upstream merge. Do this in the same commit as the move. Never rename a moved function or field (the grep-by-original-name mapping is the point); rename only with a real reason and say why in the pointer comment.
 
 ## How to work here
 - Moves: `git mv src/x.ts core/x.ts`, then write the shim. Then run `npx tsc --noEmit -p tsconfig.core.json` and fix what it names.
