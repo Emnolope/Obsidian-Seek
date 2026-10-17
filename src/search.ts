@@ -49,7 +49,7 @@ import { embedAndCommit, type EmbedCommitCtx, type SidecarFlushJob } from '../co
 import { applyDelta as applyDeltaCore } from '../core/apply-delta';
 import { reconcileIdentityInPlace } from '../core/reconcile';
 import { dedupViaSidecar as dedupViaSidecarCore, carryOverHydrate as carryOverHydrateCore } from '../core/hydrate-before-embed';
-import { harvestCarryOverInto as harvestCarryOverIntoCore, reconcileGhostDirt as reconcileGhostDirtCore, deltaFallback as deltaFallbackCore } from '../core/delta-tail';
+import { harvestCarryOverInto as harvestCarryOverIntoCore, reconcileGhostDirt as reconcileGhostDirtCore, deltaFallback as deltaFallbackCore, exportMcpAfterSuccessfulCommit as exportMcpAfterSuccessfulCommitCore } from '../core/delta-tail';
 import { shouldIndexPath as shouldIndexPathCore, chunksFor as chunksForCore, computeDelta, UnreadableQuarantine } from '../core/delta';
 import { ResidentIndex, type ResidentPorts } from '../core/resident-index';
 import { runSearch, type SearchHost, type SearchOverride, type ExperimentOverride } from '../core/engine';
@@ -239,18 +239,8 @@ export class SearchOrchestrator {
         return this.coord.isWriting() || this.sidecarFlushesInFlight > 0;
     }
 
-    // Purple-shirt hook: this is the visible MCP export integration point, tied to
-    // the same successful pass completion that committed the index. We do NOT add a
-    // second generation protocol or separate bookkeeping layer — the export is just
-    // derived from the already-committed IDB state immediately after a successful
-    // reindex/delta completes.
     private async exportMcpAfterSuccessfulCommit(mode: 'full' | 'incremental'): Promise<void> {
-        try {
-            const meta = await exportMcpIndex(this.app.vault.adapter, this.store);
-            this.forensics?.beat('mcp-export', { mode, generation: meta.generation, chunkCount: meta.chunkCount });
-        } catch (e) {
-            await this.logger.appendError(`mcp-export:${mode}`, e).catch(() => {});
-        }
+        return exportMcpAfterSuccessfulCommitCore({ exportMcpIndex: () => exportMcpIndex(this.app.vault.adapter, this.store), forensics: this.forensics, logger: this.logger }, mode);
     }
 
     // Full reindex. Drops the database, walks all markdown, re-embeds everything.

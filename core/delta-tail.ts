@@ -13,6 +13,11 @@ export interface GhostCtx {
     invalidateBm25Cache(): void;
     warmCaches(reason: string): Promise<unknown>;
 }
+export interface ExportCtx {
+    exportMcpIndex(): Promise<{ generation: string; chunkCount: number }>;
+    forensics: { beat(type: string, detail?: Record<string, unknown>): void } | null;
+    logger: { appendError(context: string, e: unknown): Promise<void> };
+}
 export interface FallbackCtx {
     deltaFallbackCounts: Map<string, number>;
     setLastReason(reason: string): void;
@@ -100,4 +105,18 @@ export function deltaFallback(ctx: FallbackCtx, reason: string, detail?: Record<
         + (detail ? ` ${JSON.stringify(detail)}` : ''));
     ctx.forensics?.beat('delta-fallback', { reason, sessionCount: n, ...detail });
     return false;
+}
+
+// Purple-shirt hook: this is the visible MCP export integration point, tied to
+// the same successful pass completion that committed the index. We do NOT add a
+// second generation protocol or separate bookkeeping layer — the export is just
+// derived from the already-committed IDB state immediately after a successful
+// reindex/delta completes.
+export async function exportMcpAfterSuccessfulCommit(ctx: ExportCtx, mode: 'full' | 'incremental'): Promise<void> {
+    try {
+        const meta = await ctx.exportMcpIndex();
+        ctx.forensics?.beat('mcp-export', { mode, generation: meta.generation, chunkCount: meta.chunkCount });
+    } catch (e) {
+        await ctx.logger.appendError(`mcp-export:${mode}`, e).catch(() => {});
+    }
 }
