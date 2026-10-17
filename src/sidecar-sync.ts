@@ -39,14 +39,8 @@ import {
     type ResolvedEntry,
 } from './sidecar';
 import { metaAccepts, readDeviceMeta, type MetaExpectation, type SidecarMeta } from './sidecar-meta';
-
-// One live note re-chunked locally: the liveness oracle's unit.
-export interface ReChunkedNote {
-    notePath: string;
-    mtimeMs: number;
-    chunks: Chunk[]; // each carries chunk_id
-    contentHash?: string; // cyrb53 of the raw bytes — persisted so computeDelta can skip mtime-only re-stamps
-}
+import type { ReChunkedNote, HydrateResult } from '../core/sidecar-types';
+export type { ReChunkedNote, HydrateResult } from '../core/sidecar-types';
 
 export interface HydrateDeps {
     adapter: DataAdapter;
@@ -65,27 +59,6 @@ export interface HydrateDeps {
     batchSize?: number; // putQuantized batch size (default 500)
 }
 
-export interface HydrateResult {
-    scanned: number; // sidecar live records across accepted producers
-    needed: number; // live ∩ sidecar, minus already-in-IDB (chunks)
-    hydrated: number; // chunks actually written
-    skippedPartialNotes: number; // notes skipped because a chunk's bytes weren't synced yet
-    refusedProducers: number; // producers excluded by the version gate
-    acceptedProducers: number;
-    // A refused producer is at a HIGHER chunkerVersion than this build can read — i.e.
-    // another device holds a newer index this plugin is too old to use. Distinct from
-    // refusedProducers (which also counts merely-different/older/torn producers): this is
-    // specifically "I'm behind, the user should update Seek". Drives the peer-ahead banner
-    // and the mobile grind-stop (skip the futile local re-embed).
-    peerAhead: boolean;
-    hydratedNotePaths: string[]; // notes fully hydrated (a file record was written) — drives delta dedup
-    // Corpus dense-cosine background inherited from the freshest accepted producer
-    // (newest lastFullReindex) — the orchestrator writes it into local meta so a
-    // hydrate-only device gets display calibration. Undefined if no producer
-    // carried stats.
-    bgMean?: number;
-    bgStd?: number;
-}
 
 // Epoch (ms) of a producer's last full reindex, for "freshest" selection. A
 // null / absent / unparseable timestamp yields -Infinity so it sorts below every

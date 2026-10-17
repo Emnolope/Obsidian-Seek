@@ -48,11 +48,15 @@ import { planFileDiff, captureRemovalBodies } from '../core/file-diff';
 import { embedAndCommit, type EmbedCommitCtx, type SidecarFlushJob } from '../core/embed-commit';
 import { applyDelta as applyDeltaCore } from '../core/apply-delta';
 import { reconcileIdentityInPlace } from '../core/reconcile';
+import { dedupViaSidecar as dedupViaSidecarCore, carryOverHydrate as carryOverHydrateCore } from '../core/hydrate-before-embed';
 import { harvestCarryOverInto as harvestCarryOverIntoCore, reconcileGhostDirt as reconcileGhostDirtCore, deltaFallback as deltaFallbackCore } from '../core/delta-tail';
 import { shouldIndexPath as shouldIndexPathCore, chunksFor as chunksForCore, computeDelta, UnreadableQuarantine } from '../core/delta';
 import { ResidentIndex, type ResidentPorts } from '../core/resident-index';
 import { runSearch, type SearchHost, type SearchOverride, type ExperimentOverride } from '../core/engine';
 import { alignCandidate, buildResidentRerankBlock, chunkMetaEqual, pushDeltaAdds, freshDeltaAdds, appendFrameRows, tombstoneFrameRows, buildSelectionMask, COMPACTION_TOMBSTONE_FRACTION, COHERENCE_SAMPLES, COHERENCE_DRIFT_COOLDOWN_MS, coherenceDriftDecision, shouldDiscardPartialFrame, driftRecoveryDecision, frameBm25Coherent, buildBm25Stamp, bm25StampMatches, dedupByPath, topKByScore, snippetPlainText, makeSnippet, type ResidentFrame, type DeltaAdd, type DriftRecoveryState, type RowSpaceProbe, type Bm25PersistStamp } from '../core/search-helpers';
+
+// mtime is a live getter: a pass records the mtime as of the moment it READS the file.
+const liveOf = (files: TFile[]) => files.map(f => ({ path: f.path, get mtime() { return f.stat.mtime; }, handle: f }));
 export { alignCandidate, buildResidentRerankBlock, chunkMetaEqual, pushDeltaAdds, freshDeltaAdds, appendFrameRows, tombstoneFrameRows, buildSelectionMask, COMPACTION_TOMBSTONE_FRACTION, COHERENCE_SAMPLES, COHERENCE_DRIFT_COOLDOWN_MS, coherenceDriftDecision, shouldDiscardPartialFrame, driftRecoveryDecision, frameBm25Coherent, buildBm25Stamp, bm25StampMatches } from '../core/search-helpers';
 export type { ResidentFrame, DeltaAdd, DriftRecoveryState, RowSpaceProbe, Bm25PersistStamp } from '../core/search-helpers';
 
@@ -1624,16 +1628,6 @@ export class SearchOrchestrator {
         };
     }
 
-    // Dedup-before-embed: hydrate the dirty files the sidecar already covers
-    // (another device embedded the same content) instead of re-embedding them,
-    // and return the files that still need the model. Pure optimization — a
-    // miss just embeds. Stale rows are handled HERE now (chunk-diff, issue #5:
-    // the delta's wholesale pre-delete is gone): after a note hydrates, any
-    // old-record id its new chunk set no longer references is deleted + surfaced
-    // through the removal sinks, exactly like the engine's diff. Pre-edit ids
-    // lingering in existingIds are harmless — coverage is judged against the
-    // NEW chunk ids, and a still-present id just means "nothing to hydrate"
-    // (which now correctly skips re-writing rows a revert already has).
     private async dedupViaSidecar(
         files: TFile[],
         addsSink?: DeltaAdd[],
@@ -1641,100 +1635,15 @@ export class SearchOrchestrator {
         removedBodiesSink?: Map<string, string>,
         metaPatchSink?: Array<{ id: string; meta: ChunkMeta }>,
     ): Promise<TFile[]> {
-        if (!this.coord.sidecarOn() || files.length === 0) return files;
-        // Same chunk_id-reproduction requirement as reChunkLive: apply the
-        // token-budget split so split notes match the sidecar (without it this
-        // dedup silently missed every long note and re-embedded it). The model
-        // is loaded on this path (reindexDelta's embed half), so ensureTokenizer
-        // is a no-op; the guard just makes the dependency explicit.
-        await this.embedder.ensureTokenizer();
-        const notes: ReChunkedNote[] = [];
-        for (const f of files) {
-            let content: string;
-            try {
-                content = await this.app.vault.cachedRead(f);
-            } catch {
-                continue;
-            }
-            let chunks = this.chunksFor(content, f.path, new Date(f.stat.mtime).toISOString());
-            if (chunks.length === 0) continue;
-            try {
-                chunks = (await enforceTokenBudget(chunks, ts => this.embedder.tokenCounts(ts))).chunks;
-            } catch (e) {
-                await this.logger.appendError(`dedupViaSidecar-tokenBudget:${f.path}`, e);
-                continue;
-            }
-            if (chunks.length > 0) notes.push({ notePath: f.path, mtimeMs: f.stat.mtime, chunks, contentHash: cyrb53Hex(content) });
-        }
-        if (notes.length === 0) return files;
-        // Called from inside reindexDelta's runExclusive — invoke the engine
-        // directly (NOT hydrateSidecar, which would re-enter the mutex). addsSink
-        // (when the delta path supplies it) surfaces the hydrated chunks into the
-        // change-set so applyDelta can apply them incrementally.
-        // Old records AND old metas of id-stable chunks read BEFORE the hydrate
-        // overwrites them — the stale-row cleanup and the id-stable metadata
-        // reconciliation below both diff against pre-hydrate state.
-        const oldRecs = new Map<string, FileRecord>();
-        const oldStableMetas = new Map<string, ChunkMeta>();
-        for (const n of notes) {
-            const rec = await this.store.getFileRecord(n.notePath).catch(() => null);
-            if (!rec) continue;
-            oldRecs.set(n.notePath, rec);
-            const newIdSet = new Set(n.chunks.map(c => c.chunk_id));
-            const stableIds = rec.chunk_ids.filter(id => newIdSet.has(id));
-            if (stableIds.length > 0) {
-                try {
-                    for (const [id, m] of await this.store.getChunkMetasByIds(stableIds)) oldStableMetas.set(id, m);
-                } catch { /* classification degrades to nothing; the engine path heals on the next edit */ }
-            }
-        }
-        const res = await hydrateFromSidecar(this.hydrateDeps(async () => notes, addsSink));
-        this._peerAhead = res.peerAhead; // refresh the "newer index exists" signal per scan
-        const done = new Set(res.hydratedNotePaths);
-        // Reconciliation for hydrated notes (chunk-diff, issue #5). The hydrate
-        // rewrote EVERY chunk's IDB rows and pushed them all into addsSink, but
-        // applyDelta's freshDeltaAdds drops the ones whose id is still LIVE in
-        // the row space — so without the lanes below, an id-stable chunk whose
-        // note-level metadata drifted (inline #tag in another section) would
-        // have fresh IDB meta and a stale frame/BM25 doc FOREVER (the next
-        // diff compares IDB-old vs new, sees them equal, and never patches).
-        //   - stale ids (dropped from the note): delete + exact-removal entries.
-        //   - id-stable, meta drifted, BM25-irrelevant: metaPatchSink (frame swap).
-        //   - id-stable, BM25-relevant drift: removal entry; the hydrate's OWN
-        //     addsSink entry then survives freshDeltaAdds (row freed) and
-        //     re-adds the doc with fresh meta — no extra add needed here.
-        const newChunksByPath = new Map(notes.map(n => [n.notePath, n.chunks]));
-        for (const p of res.hydratedNotePaths) {
-            const rec = oldRecs.get(p);
-            const newChunks = newChunksByPath.get(p);
-            if (!rec || !newChunks) continue;
-            const newIdSet = new Set(newChunks.map(c => c.chunk_id));
-            const stale = rec.chunk_ids.filter(id => !newIdSet.has(id));
-            try {
-                if (stale.length > 0) {
-                    if (removedBodiesSink) {
-                        for (const [id, body] of await this.store.getBodiesMap(stale)) removedBodiesSink.set(id, body);
-                    }
-                    await this.store.deleteChunksByIds(stale);
-                    removedSink?.push(...stale);
-                }
-                for (const c of newChunks) {
-                    const old = oldStableMetas.get(c.chunk_id);
-                    if (!old) continue;                       // genuinely new — hydrate's add covers it
-                    const next = stripContent(c);
-                    if (chunkMetaEqual(old, next)) continue;  // untouched
-                    if (MultiFieldBM25.docFieldsEqual(old, next)) {
-                        metaPatchSink?.push({ id: c.chunk_id, meta: next });
-                    } else if (removedSink && removedBodiesSink) {
-                        removedBodiesSink.set(c.chunk_id, c.content ?? '');
-                        removedSink.push(c.chunk_id);
-                    }
-                }
-            } catch (e) {
-                await this.logger.appendError(`sidecarDedup-stale-cleanup:${p}`, e);
-            }
-        }
-        return files.filter(f => !done.has(f.path));
+        const o = this;
+        const left = await dedupViaSidecarCore<TFile>({
+            embedder: o.embedder, logger: o.logger, store: o.store, coord: o.coord,
+            read: f => o.app.vault.cachedRead(f.handle),
+            chunksFor: (content, path, modifiedIso) => o.chunksFor(content, path, modifiedIso),
+            hydrate: (notes, adds) => hydrateFromSidecar(o.hydrateDeps(async () => notes, adds)),
+            get _peerAhead() { return o._peerAhead; }, set _peerAhead(v) { o._peerAhead = v; },
+        }, liveOf(files), addsSink, removedSink, removedBodiesSink, metaPatchSink);
+        return left.map(f => f.handle);
     }
 
     private async harvestCarryOverInto(
@@ -1744,64 +1653,17 @@ export class SearchOrchestrator {
         return harvestCarryOverIntoCore({ store: this.store, logger: this.logger }, map, paths);
     }
 
-    // F13: re-chunk each candidate and, if EVERY chunk's embed text is in the
-    // carry-over map, write the chunks with their REUSED tiers (verbatim, no model
-    // forward pass) and drop the file from the embed set. All-or-nothing per note,
-    // mirroring dedupViaSidecar: a partially-changed file falls through to a normal
-    // embed. The headline win is a folder reorg (pure moves) re-keying for free.
     private async carryOverHydrate(
         files: TFile[],
         carryOver: Map<string, { q: QuantVec; sign: Uint8Array }>,
     ): Promise<TFile[]> {
-        if (carryOver.size === 0 || files.length === 0) return files;
-        // The model-loaded embed path already has the tokenizer; the guard just
-        // makes the chunk_id-reproduction dependency explicit (as in dedupViaSidecar).
-        await this.embedder.ensureTokenizer();
-        const done = new Set<string>();
-        for (const f of files) {
-            let content: string;
-            try { content = await this.app.vault.cachedRead(f); } catch { continue; }
-            let chunks = this.chunksFor(content, f.path, new Date(f.stat.mtime).toISOString());
-            if (chunks.length === 0) continue;
-            try {
-                chunks = (await enforceTokenBudget(chunks, ts => this.embedder.tokenCounts(ts))).chunks;
-            } catch (e) {
-                await this.logger.appendError(`carryOver-tokenBudget:${f.path}`, e);
-                continue;
-            }
-            if (chunks.length === 0) continue;
-            const tiers = chunks.map(c => carryOver.get(embedInput(c)));
-            if (tiers.some(t => t === undefined)) continue;   // not fully covered → embed normally
-            // The delta no longer pre-deletes a dirty file's rows (chunk-diff,
-            // issue #5), so the old record — read BEFORE the overwrite below —
-            // tells us which rows the hydrated chunk set no longer references.
-            // They must be dropped or they orphan into ghost results on the next
-            // cold frame rebuild. No change-set entries needed: a carry-over
-            // delta always takes the full-rebuild path (carriedOver > 0).
-            const oldRec = await this.store.getFileRecord(f.path).catch(() => null);
-            // One atomic tx for chunks + record (S1), same as commitFile.
-            try {
-                await this.store.putBatchQuantized(chunks, tiers.map(t => ({ q: t!.q, bin: t!.sign })),
-                    { note_path: f.path, mtimeMs: f.stat.mtime, chunk_ids: chunks.map(c => c.chunk_id), contentHash: cyrb53Hex(content) });
-            } catch (e) {
-                // A commit failure (quota, closing store) must not abort the whole
-                // delta burst. Leave the file OUT of `done`: it falls through to
-                // the normal embed path, whose per-file catch classifies quota
-                // (S2) and keeps the file dirty for catch-up.
-                await this.logger.appendError(`carryOver-commit:${f.path}`, e);
-                continue;
-            }
-            if (oldRec) {
-                const newIdSet = new Set(chunks.map(c => c.chunk_id));
-                const stale = oldRec.chunk_ids.filter(id => !newIdSet.has(id));
-                if (stale.length > 0) {
-                    await this.store.deleteChunksByIds(stale)
-                        .catch(e => this.logger.appendError(`carryOver-stale-cleanup:${f.path}`, e));
-                }
-            }
-            done.add(f.path);
-        }
-        return files.filter(f => !done.has(f.path));
+        const o = this;
+        const left = await carryOverHydrateCore<TFile>({
+            embedder: o.embedder, logger: o.logger, store: o.store,
+            read: f => o.app.vault.cachedRead(f.handle),
+            chunksFor: (content, path, modifiedIso) => o.chunksFor(content, path, modifiedIso),
+        }, liveOf(files), carryOver);
+        return left.map(f => f.handle);
     }
 
     private async emitProgress(
