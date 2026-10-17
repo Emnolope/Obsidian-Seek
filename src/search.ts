@@ -585,8 +585,8 @@ export class SearchOrchestrator {
             embedderLoaded: () => o.embedder.loaded,
             healEligibility: m => identityHealEligibility(m),
             identity: () => pluginIdentity(),
-            embeddingDim: EMBEDDING_DIM,
-            modelId: MODEL_ID,
+            EMBEDDING_DIM,
+            MODEL_ID,
             resetBgStats: () => { o.bgStatsGen = -1; },
             invalidateBm25Cache: () => o.invalidateBm25Cache(),
         });
@@ -916,7 +916,7 @@ export class SearchOrchestrator {
     }
 
     private reconcileGhostDirt(): boolean {
-        return reconcileGhostDirtCore({ bm: this.bm25Cache, forensics: this.forensics, invalidateBm25Cache: () => this.invalidateBm25Cache(), warmCaches: r => this.warmCaches(r) });
+        return reconcileGhostDirtCore({ bm25Cache: this.bm25Cache, forensics: this.forensics, invalidateBm25Cache: () => this.invalidateBm25Cache(), warmCaches: r => this.warmCaches(r) });
     }
 
 
@@ -965,7 +965,7 @@ export class SearchOrchestrator {
     // don't surface the REASON of a specific pass's fallback.
     private lastDeltaFallbackReason: string | null = null;
     private deltaFallback(reason: string, detail?: Record<string, unknown>): false {
-        return deltaFallbackCore({ counts: this.deltaFallbackCounts, setLastReason: r => { this.lastDeltaFallbackReason = r; }, forensics: this.forensics }, reason, detail);
+        return deltaFallbackCore({ deltaFallbackCounts: this.deltaFallbackCounts, setLastReason: r => { this.lastDeltaFallbackReason = r; }, forensics: this.forensics }, reason, detail);
     }
 
     // Drift-detector trip handler for the QUERY path (the applyDelta path returns

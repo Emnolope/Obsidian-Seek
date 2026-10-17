@@ -18,8 +18,8 @@ export interface ReconcileCtx {
     embedderLoaded(): boolean;
     healEligibility(meta: MetaConfig): 'stale' | 'eligible';
     identity(): IndexIdentity;
-    embeddingDim: number;
-    modelId: string;
+    EMBEDDING_DIM: number;
+    MODEL_ID: string;
     resetBgStats(): void;
     invalidateBm25Cache(): void;
 }
@@ -96,7 +96,7 @@ export async function reconcileIdentityInPlace(ctx: ReconcileCtx): Promise<'stal
     // stamp at hydrateSidecar.
     await ctx.coord.runExclusive(async () => {
         const { vecs } = await ctx.store.listAllEmbeddings();
-        const bgSum = new Float64Array(ctx.embeddingDim);
+        const bgSum = new Float64Array(ctx.EMBEDDING_DIM);
         let bgN = 0;
         const reservoir = new VecReservoir(BG_RESERVOIR);
         for (const qv of vecs) {
@@ -110,8 +110,8 @@ export async function reconcileIdentityInPlace(ctx: ReconcileCtx): Promise<'stal
         const m = await ctx.store.getMeta();
         await ctx.store.setMeta({
             ...m,
-            embeddingDim: ctx.embeddingDim,
-            modelId: m.modelId ?? ctx.modelId,
+            embeddingDim: ctx.EMBEDDING_DIM,
+            modelId: m.modelId ?? ctx.MODEL_ID,
             chunkerVersion: id.chunkerVersion,
             analyzerVersion: id.analyzerVersion,
             revision: id.revision,

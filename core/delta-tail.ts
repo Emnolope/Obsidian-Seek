@@ -8,13 +8,13 @@ export interface CarryOverCtx {
     logger: { appendError(context: string, e: unknown): Promise<void> };
 }
 export interface GhostCtx {
-    bm: { readonly dirtCount: number } | null;
+    bm25Cache: { readonly dirtCount: number } | null;
     forensics: { beat(type: string, detail?: Record<string, unknown>): void } | null;
     invalidateBm25Cache(): void;
     warmCaches(reason: string): Promise<unknown>;
 }
 export interface FallbackCtx {
-    counts: Map<string, number>;
+    deltaFallbackCounts: Map<string, number>;
     setLastReason(reason: string): void;
     forensics: { beat(type: string, detail?: Record<string, unknown>): void } | null;
 }
@@ -70,7 +70,7 @@ export async function harvestCarryOverInto(
 // kicked (the caller skips its own persist — the warm re-persists).
 export const GHOST_DIRT_REFIT_THRESHOLD = 64;
 export function reconcileGhostDirt(ctx: GhostCtx): boolean {
-    const bm = ctx.bm;
+    const bm = ctx.bm25Cache;
     if (!bm) return false;
     const dirt = bm.dirtCount;
     if (dirt === 0) return false;
@@ -93,8 +93,8 @@ export function reconcileGhostDirt(ctx: GhostCtx): boolean {
 // values (counts, sizes) go in `detail`, which rides the beat payload only.
 export function deltaFallback(ctx: FallbackCtx, reason: string, detail?: Record<string, unknown>): false {
     ctx.setLastReason(reason);
-    const n = (ctx.counts.get(reason) ?? 0) + 1;
-    ctx.counts.set(reason, n);
+    const n = (ctx.deltaFallbackCounts.get(reason) ?? 0) + 1;
+    ctx.deltaFallbackCounts.set(reason, n);
     // console.* is invisible on mobile; the beat is the field-observable channel.
     console.info(`[seek] applyDelta fallback: ${reason} — full cache rebuild (×${n} this session)`
         + (detail ? ` ${JSON.stringify(detail)}` : ''));
