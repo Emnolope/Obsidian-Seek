@@ -24,7 +24,7 @@ export const EXCLUDED_PREFIXES = [
 // fork 1.1.3 src/search.ts:187 shouldIndexPath
 // The single index-membership predicate. `isIgnored` is the host's view of the user's "Excluded files" list (Obsidian's matcher in the plugin; the MCP has
 // none unless it reads .obsidian/app.json), so this stays pure and every caller agrees on membership.
-export function shouldIndexByRules(settings: Pick<SeekSettings, 'honorIgnoredFolders'>, path: string, isIgnored: (path: string) => boolean): boolean {
+export function shouldIndexPath(settings: Pick<SeekSettings, 'honorIgnoredFolders'>, path: string, isIgnored: (path: string) => boolean): boolean {
     if (EXCLUDED_PATHS.has(path)) return false;
     if (EXCLUDED_PREFIXES.some(p => path.startsWith(p))) return false;
     if (settings.honorIgnoredFolders && isIgnored(path)) return false;
@@ -48,6 +48,7 @@ export function chunksFor(
     return chunker.chunkContent(content, path, undefined, modifiedIso);
 }
 
+// fork 1.1.3 new; relates to src/index-store.ts:255 classifyFileDelta (what the quarantine keeps from reporting 'dirty' forever)
 // Files that persistently fail to read are skipped for a backoff window. Without it the dropped record makes classifyFileDelta report 'dirty' forever,
 // wedging every computeDelta caller. A full reindex clears it so everything is retried then.
 export class UnreadableQuarantine {

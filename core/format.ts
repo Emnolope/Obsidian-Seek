@@ -313,4 +313,5 @@ export function resolveJsonls(raws: Iterable<string>): ResolveResult {
     return { map, tombstoneIds, recordCount: total, skippedLines: skipped };
 }
 
+// fork 1.1.3 new; relates to src/sidecar.ts:223 JSONL_RE (test, like src/sidecar.ts:351 deviceIdFromJsonlPath)
 export function isJsonlName(name: string): boolean { return JSONL_RE.test(name); }

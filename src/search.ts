@@ -46,7 +46,7 @@ import { exportMcpIndex } from './mcp-export';
 import { planFileDiff, captureRemovalBodies } from '../core/file-diff';
 import { embedAndCommit, type EmbedCommitCtx, type SidecarFlushJob } from '../core/embed-commit';
 import { applyDelta as applyDeltaCore } from '../core/apply-delta';
-import { shouldIndexByRules, chunksFor as chunksForCore, computeDelta, UnreadableQuarantine } from '../core/delta';
+import { shouldIndexPath as shouldIndexPathCore, chunksFor as chunksForCore, computeDelta, UnreadableQuarantine } from '../core/delta';
 import { runSearch, type SearchHost, type RecencyOverride } from '../core/engine';
 import { alignCandidate, buildResidentRerankBlock, chunkMetaEqual, pushDeltaAdds, freshDeltaAdds, appendFrameRows, tombstoneFrameRows, buildSelectionMask, COMPACTION_TOMBSTONE_FRACTION, COHERENCE_SAMPLES, COHERENCE_DRIFT_COOLDOWN_MS, coherenceDriftDecision, shouldDiscardPartialFrame, driftRecoveryDecision, frameBm25Coherent, buildBm25Stamp, bm25StampMatches, dedupByPath, topKByScore, snippetPlainText, makeSnippet, type ResidentFrame, type DeltaAdd, type DriftRecoveryState, type RowSpaceProbe, type Bm25PersistStamp } from '../core/search-helpers';
 export { alignCandidate, buildResidentRerankBlock, chunkMetaEqual, pushDeltaAdds, freshDeltaAdds, appendFrameRows, tombstoneFrameRows, buildSelectionMask, COMPACTION_TOMBSTONE_FRACTION, COHERENCE_SAMPLES, COHERENCE_DRIFT_COOLDOWN_MS, coherenceDriftDecision, shouldDiscardPartialFrame, driftRecoveryDecision, frameBm25Coherent, buildBm25Stamp, bm25StampMatches } from '../core/search-helpers';
@@ -104,7 +104,7 @@ function isUserIgnored(app: App, path: string): boolean {
 // SearchOrchestrator.shouldIndex delegates here so there is exactly one
 // implementation to keep in sync (see the audit note in suggest.ts).
 export function shouldIndexPath(app: App, settings: SeekSettings, path: string): boolean {
-    return shouldIndexByRules(settings, path, p => isUserIgnored(app, p));
+    return shouldIndexPathCore(settings, path, p => isUserIgnored(app, p));
 }
 
 // Per-call recency override for search() — the seek:search CLI's

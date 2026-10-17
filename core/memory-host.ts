@@ -24,6 +24,7 @@ export function numericKeysFromTypesJson(raw: unknown): Set<string> {
     return new Set(Object.entries(types).filter(([, t]) => String(t).toLowerCase() === 'number').map(([k]) => k));
 }
 
+// fork 1.1.3 new; relates to src/search.ts:4526 buildResidentRerankBlock + src/search.ts:4556 ResidentFrame (MCP builds the frame from sidecar docs, the plugin from IDB)
 export function assembleFrame(docs: MemoryDoc[]): ResidentFrame | null {
     if (docs.length === 0) return null;
     const dim = docs[0].vec.q.length;

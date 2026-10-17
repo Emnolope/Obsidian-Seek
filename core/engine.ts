@@ -636,6 +636,7 @@ export async function runSearch(host: SearchHost, query: string, topK = 10, rece
     return { results, entry };
 }
 
+// fork 1.1.3 new; relates to src/search.ts:3307 SearchOrchestrator.search (dense-only counterpart for caller-supplied vectors)
 // Pure dense search for callers that hold only a vector (no query text, so nothing lexical to fuse). Exact cosine over every live row,
 // per-chunk results (no note dedup), same as the MCP's original vector path. True cosine rather than ranker.cosineScores' dot product,
 // because a caller-supplied vector isn't guaranteed unit-length.
