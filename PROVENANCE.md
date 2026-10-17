@@ -1,5 +1,8 @@
 # Provenance: where our code came from upstream
 
+## Philosophy
+Upstream is immutable and we’ve diverged, so an upstream update has to be ported through the diff of their changes combined with the diff of ours, which is approximate. To make that mapping cheap, keep the fork recognizable. Don’t rename or refactor. Move only when needed, and tag every moved or new function with its origin or “new”.
+
 Upstream is ryan-manor/Obsidian-Seek. We forked at tag `1.1.3` (1f0a9b0). Every pointer below is pinned to that tag, so line numbers never drift.
 
 - `// fork 1.1.3: whole file moved from src/X.ts` at the top of a file: the file moved as-is. `src/X.ts` is now a re-export shim.
