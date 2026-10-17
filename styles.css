@@ -727,7 +727,11 @@
     cursor: pointer;
     color: var(--text-muted);
 }
-.seek-recent:hover {
+/* One highlight for both inputs: mouse hover (via a mousemove handler) and
+   keyboard ↑/↓ both toggle .is-selected, so — like the result rows — there is no
+   standalone :hover rule that could paint a second row alongside a keyboard
+   selection. */
+.seek-recent.is-selected {
     background: var(--background-modifier-hover);
     color: var(--text-normal);
 }
@@ -747,8 +751,9 @@
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-/* The ✕ appears on row hover (kept in the layout, faded, so the text never
-   shifts). Touch has no hover — .seek-mobile keeps it visible outright. */
+/* The ✕ appears when the row is selected — keyboard ↑/↓ or mouse hover (kept in
+   the layout, faded, so the text never shifts). Touch has no hover — .seek-mobile
+   keeps it visible outright. */
 .seek-recent-remove {
     display: flex;
     align-items: center;
@@ -757,7 +762,7 @@
     color: var(--text-faint);
     opacity: 0;
 }
-.seek-recent:hover .seek-recent-remove {
+.seek-recent.is-selected .seek-recent-remove {
     opacity: 1;
 }
 .seek-recent-remove:hover {
@@ -1059,6 +1064,13 @@
     background: var(--interactive-accent);
     border-radius: 3px;
     transition: width 0.2s ease;
+}
+/* "Indexing on GPU / CPU" — sits under the bar, matched to the count above it so
+   the two read as one meter rather than a bar with a caption bolted on. */
+.seek-settings .seek-progress-backend {
+    margin-top: 7px;
+    font-size: 11.5px;
+    color: var(--text-muted);
 }
 
 /* ---- Relevance: intro + pipeline diagram ---- */

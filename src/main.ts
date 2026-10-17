@@ -22,14 +22,14 @@ import { LocalEmbedder, LOCAL_MODEL, LEGACY_ENGLISH_MODEL_ID, EMBEDDING_DIM } fr
 import { activeModelSpec, resolveOverrideSpec, evictStaleModelCaches, deleteModelCaches, probeModelDownloaded } from './model-registry';
 import { pluginIdentity, identityMatches, identityFromMeta } from './identity';
 import { sweepOrphanTmpFiles } from './sidecar';
-import type { SeekSettings, IndexCompleteEntry, ModelDeliveryEntry } from './types';
+import type { SeekSettings, IndexCompleteEntry, ModelDeliveryEntry, SearchEntry, ScoredChunk, Device } from './types';
 import { DEFAULT_SETTINGS, migrateSettings } from './types';
 import { IndexStore, indexDbPrefix } from './index-store';
 import { SeekLogger } from './logger';
 import { Forensics } from './forensics';
 import { RecentSearches } from './recents';
-import { SearchOrchestrator, driftRecoveryDecision, type RecencyOverride } from './search';
-import { SeekSearchModal, TITLE_NAV_COVERAGE_MIN, titleNavCoverage, type IndexBanner } from './search-modal';
+import { SearchOrchestrator, driftRecoveryDecision, type SearchOverride, type ExperimentOverride } from './search';
+import { SeekSearchModal, TITLE_NAV_COVERAGE_MIN, titleNavCoverage, type IndexBanner, type ResultOpenInfo } from './search-modal';
 import {
     buildNoteLink,
     insertLinkInEditor,
@@ -43,9 +43,15 @@ import { collectPlatformInfo, isMobilePlatform, resolveDevice, recordActiveBacke
 import { CompositorPacer } from './pacer';
 import { shouldUnloadEmbedder, type UnloadGateState } from './embedder-lifecycle';
 import { drainCatchUp, CATCHUP_MAX_FILES_PER_BURST, CATCHUP_BURST_BUDGET_MS } from './catchup';
+import { nextFlushDelay } from './flush-schedule';
 import { TaskContextTracker, type TaskContext } from './task-context';
 import type { LongTaskEntry, MemoryPressureEntry, StorageSnapshotEntry, EvictionSuspectedEntry, AppLocalFetchEntry } from './types';
 import { exportMcpIndex } from './mcp-export';
+
+// Ribbon action tooltip. Part of the ribbon item's persisted id
+// (`<pluginId>:<title>`) — renaming it silently resets every user's
+// quick-access pick and hide/reorder state for the icon. Never change it.
+export const RIBBON_TITLE = 'Seek search';
 
 // Long-task threshold. PerformanceObserver fires for any task ≥50 ms by spec,
 // but at that floor we'd flood the log. 250 ms is the rough threshold above
@@ -66,9 +72,17 @@ function isIndexableFile(f: TFile, indexBases: boolean): boolean {
 // Incremental-indexing debounces. Edits wait out a 5-min idle window after the
 // user leaves a note (so flipping back to keep writing never triggers a flush
 // mid-thought); deletes/moves apply on a short window (they're model-free and a
-// dead search result is jarring). See wireIncrementalIndexing.
-const IDLE_FLUSH_MS = 5 * 60 * 1000;
+// dead search result is jarring). See wireIncrementalIndexing. The idle window
+// and its max-wait cap live in flush-schedule.ts (pure, so they're testable —
+// this file has no unit coverage).
 const STRUCT_FLUSH_MS = 1500;
+
+// How often periodicReconcile may re-arm catch-up with a fresh delta (issue #8).
+// Deliberately much coarser than the 5-min poll it rides: the check costs an
+// O(vault) listFileRecords scan, and issue #5 was caused by exactly this method
+// doing per-tick work on a large vault. It is a BACKSTOP — the modify/create/
+// delete/rename listeners are the live path — so a coarse interval is enough.
+const CATCHUP_REARM_INTERVAL_MS = 20 * 60 * 1000;
 
 // Mobile-only embedder unload (see maybeUnloadEmbedder). After this long with no
 // model use in a quiescent state, tear down the iframe to release its ~240 MB
@@ -198,10 +212,28 @@ export default class SeekPlugin extends Plugin {
     private lastActiveFile: TFile | null = null;
     private idleTimer: number | null = null;   // 5-min debounce for edits
     private structTimer: number | null = null;  // short debounce for deletes/moves
+    // Epoch ms of the enqueue that started the CURRENT dirty queue; 0 = queue empty.
+    // Bounds the idle debounce's reset (see nextFlushDelay) so an external write
+    // stream can't push the flush out forever.
+    private firstDirtyAt = 0;
     private lastModelUseAt = 0;                  // epoch ms of the last ensureModelLoaded; drives the idle-unload timer (mobile)
     private flushing = false;                    // flushDirty re-entrancy guard
     private catchUpPending = false;              // cold-mobile deferred an embed
     private catchUpRunning = false;              // runCatchUp re-entrancy guard
+    // Manual pause of a full reindex (design B). pauseIndexing() sets the request;
+    // the full pass polls it at loop-top (isPaused) and breaks, committing what it
+    // started and leaving the rest dirty. `indexPaused` latches AFTER the pass
+    // returns paused, so the settings tab can show a "Paused" affordance and drive
+    // resume (which finishes the remainder via the ordinary catch-up drain).
+    private indexPauseRequested = false;         // set by pauseIndexing(), consumed by the pass / resume
+    private indexPaused = false;                 // a paused full reindex is outstanding (settings reads this)
+    get isIndexPaused(): boolean { return this.indexPaused; }
+    private lastCatchUpRearmAt = 0;              // epoch ms of the last periodic delta re-check
+    // Size of the incremental pass currently running (flushDirty's delta, or the
+    // catch-up drain); 0 when idle. Exists so the settings status card can say WHAT
+    // it is indexing — a bare "Indexing…" is indistinguishable from a full rebuild,
+    // which is most of why issue #8 was filed as "reindexes the entire vault".
+    private incrementalFiles = 0;
     // Drift auto-recovery (sibling of catch-up). The orchestrator detects persistent
     // frame/BM25 row-space drift and fires onPersistentDrift; we run a bounded,
     // embed-free recovery ladder (warm → sidecar hydrate → verify). Re-escalation is
@@ -270,6 +302,25 @@ export default class SeekPlugin extends Plugin {
     // private; this is the read-only surface the settings Index status card reads
     // (on open and while polling a live reindex) to show its "Indexing…" state.
     get isIndexing(): boolean { return this.currentTaskContext === 'indexing'; }
+
+    // The backend the embedder ACTUALLY loaded on, or null before the first
+    // successful load. Not the same question as resolveDevice(): that returns the
+    // REQUEST ('auto' = try WebGPU, fall back to WASM), so only the loaded device
+    // answers "what is this run embedding on?" — an auto request that lost the
+    // WebGPU init reads 'wasm' here. Surfaced by the settings reindex row so a
+    // slow rebuild is attributable to the CPU path instead of looking like a hang.
+    get activeBackend(): Device | null {
+        return this.embedder.loaded ? this.embedder.device : null;
+    }
+
+    // Non-null while an incremental pass is in flight, carrying its file count.
+    // Read by the settings status card. Covers the catch-up drain too, which runs
+    // under the 'catchup' task context and so is invisible to isIndexing — that
+    // drain IS the startup backlog issue #8's reporter watches, so a card reading
+    // "Up to date" through it would be the same lie in a quieter voice.
+    get incrementalWork(): { files: number } | null {
+        return this.incrementalFiles > 0 ? { files: this.incrementalFiles } : null;
+    }
     private searchActiveTimestamp: number | null = null;   // null = no live query session; else the ms timestamp of the last activity ping (modal open / keystroke) — pauses the catch-up drain so embedding never competes with the user's search
     private static readonly SEARCH_ACTIVE_MAX_AGE_MS = 60_000;
     // Count of query embeds/searches actually running right now (onQueryInFlight).
@@ -304,6 +355,17 @@ export default class SeekPlugin extends Plugin {
     }
 
     async onload() {
+        // Ribbon action (issue #9). Registered FIRST, before any await: on phones
+        // the navbar's "Quick access ribbon item" (vault config
+        // mobileQuickRibbonItem) is resolved against the ribbon list once, at
+        // layout-ready, so an icon added after onload's awaits can come up missing
+        // on a slow start. The item id is `<pluginId>:<title>`, and Obsidian keys
+        // the quick-access pick and the hide/reorder state on it, so the title
+        // must never change. Guarded by main-ribbon.test.ts.
+        this.addRibbonIcon('search', RIBBON_TITLE, () => {
+            if (!this.orchestrator) { new Notice('Seek: still loading — try again in a moment'); return; }
+            this.openSearchModal();
+        });
         this.logger = new SeekLogger(this.app, this.manifest.id);
         // Sweep any pre-existing root-level seek-log/init/captures files into the
         // hidden LOG_DIR next to the index, THEN tail-truncate this device's log if it
@@ -663,8 +725,9 @@ export default class SeekPlugin extends Plugin {
                     query: { value: '<text>', description: 'Search query (supports inline filters: #tag, tag:, path:, [k:v], dates)', required: true },
                     limit: { value: '<n>', description: 'Max results (default: 10)', required: false },
                     format: { value: 'text|json', description: 'Output format (default: text — readable list; json for programmatic use)', required: false },
-                    recencyWeight: { value: '<ε>', description: 'Override recency weight ε for THIS query only (additive; default 0.02). Not persisted — for scrobbling recency configs.', required: false },
-                    recencyHalflife: { value: '<days>', description: 'Override recency half-life in days for THIS query only (default 180). Not persisted.', required: false },
+                    recencyWeight: { value: '<ε>', description: 'Override recency weight ε for THIS query only (additive; default = setting). Not persisted — for scrobbling recency configs.', required: false },
+                    recencyHalflife: { value: '<days>', description: 'Override recency half-life in days for THIS query only (default = setting). Not persisted.', required: false },
+                    synv2: { value: 'true|false', description: 'Override synonyms v2 (phrase-trigger expansion) for THIS query only. Not persisted — for A/B probes; the first synv2=true call builds the dictionary.', required: false },
                 },
                 // Flag params arrive as the string "true"/"false", not booleans
                 // (the obsidian-cli/Templater convention), so widen the type and
@@ -686,8 +749,8 @@ export default class SeekPlugin extends Plugin {
                     const parsedLimit = typeof args.limit === 'string' ? parseInt(args.limit, 10) : NaN;
                     const topK = Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : 10;
 
-                    // Query-time recency overrides (scrobbling). Resolved into a
-                    // RecencyOverride and passed straight through to
+                    // Query-time overrides (scrobbling). Resolved into a
+                    // SearchOverride and passed straight through to
                     // orchestrator.search() as a call-local argument — NEVER written
                     // into this.settings. search() reads this.settings fresh per
                     // query, and that settings object is shared by reference with
@@ -701,13 +764,23 @@ export default class SeekPlugin extends Plugin {
                     // the UI.
                     const ovEps = typeof args.recencyWeight === 'string' ? parseFloat(args.recencyWeight) : NaN;
                     const ovHl = typeof args.recencyHalflife === 'string' ? parseFloat(args.recencyHalflife) : NaN;
-                    const recencyOverride: RecencyOverride | undefined =
-                        (Number.isFinite(ovEps) && ovEps >= 0) || (Number.isFinite(ovHl) && ovHl > 0)
+                    const epsOk = Number.isFinite(ovEps) && ovEps >= 0;
+                    const hlOk = Number.isFinite(ovHl) && ovHl > 0;
+                    const override: SearchOverride | undefined =
+                        epsOk || hlOk
                             ? {
-                                  ...(Number.isFinite(ovEps) && ovEps >= 0 ? { epsilon: ovEps } : {}),
-                                  ...(Number.isFinite(ovHl) && ovHl > 0 ? { halfLifeDays: ovHl } : {}),
+                                  ...(epsOk ? { epsilon: ovEps } : {}),
+                                  ...(hlOk ? { halfLifeDays: ovHl } : {}),
                               }
                             : undefined;
+                    // Synonyms-v2 valve override (A/B probes). Flag params arrive
+                    // as the string "true"/"false" (see the handler comment above);
+                    // same call-local discipline as the recency overrides — NEVER
+                    // written into this.settings. Absent/garbage ⇒ settings rule.
+                    const expOverride: ExperimentOverride | undefined =
+                        args.synv2 === 'true' || args.synv2 === true ? { synonymsV2: true }
+                        : args.synv2 === 'false' || args.synv2 === false ? { synonymsV2: false }
+                        : undefined;
 
                     try {
                         // Under the query-in-flight gate: a running catch-up drain
@@ -719,7 +792,7 @@ export default class SeekPlugin extends Plugin {
                             // model load (3–10 s first call) before querying — otherwise
                             // the orchestrator embeds against an unloaded model.
                             await this.ensureModelLoaded();
-                            return orchestrator.search(query, topK, recencyOverride);
+                            return orchestrator.search(query, topK, override, expOverride);
                         });
 
                         // ---- format=json: programmatic / piped callers ---------
@@ -1390,11 +1463,50 @@ export default class SeekPlugin extends Plugin {
                     this.sidecarCoalesceRunning = false;
                 }
             }
+            await this.rearmCatchUpIfStranded();
         } catch (e) {
             await this.logger.appendError('periodic-reconcile', e).catch(() => {});
         } finally {
             this.popTaskContext('reconcile');
         }
+    }
+
+    // Backstop for a stranded delta (issue #8). catchUpPending is set by
+    // reconcileOnLoad (plugin load) and flushDirty (a vault event), and cleared by
+    // drainCatchUp on an empty diff. Nothing re-armed it in between: once it went
+    // false with work still outstanding — a debounce that never expired, an event
+    // the watcher missed, a drain that gave up — the work sat until the NEXT plugin
+    // load. Observed on a live vault: 195 externally-rewritten files still dirty 20
+    // hours later, catchUpPending false, index health "healthy".
+    //
+    // The live listeners are the fix; this is the net under them, so it is
+    // deliberately cheap to skip and coarse to run:
+    //   - nothing to do when catch-up is already armed, or the model is cold (the
+    //     drain needs it, and no timer should pull in ~250 MB the user never asked
+    //     for — a cold session's work is caught by reconcileOnLoad next launch),
+    //   - never while hidden (same window rule the drain itself uses),
+    //   - at most once per CATCHUP_REARM_INTERVAL_MS, because computeDelta is
+    //     O(vault) and per-tick work here is what made issue #5.
+    // Runs inside periodicReconcile's 'reconcile' task-context span, so any jank it
+    // causes is attributed rather than reading as idle.
+    private async rearmCatchUpIfStranded(): Promise<void> {
+        if (this.catchUpPending || this.catchUpRunning) return;
+        // A paused reindex (design B) leaves its remainder dirty ON PURPOSE. Re-arming
+        // here would drain exactly what the user paused, 20 minutes after they paused
+        // it. Resume owns that work — resumeIndexing() sets catchUpPending itself.
+        if (this.indexPaused) return;
+        if (!this.embedder.loaded || !this.orchestrator) return;
+        if (activeDocument.hidden) return;
+        const now = Date.now();
+        if (now - this.lastCatchUpRearmAt < CATCHUP_REARM_INTERVAL_MS) return;
+        this.lastCatchUpRearmAt = now;
+        const { dirty, deleted } = await this.orchestrator.computeDelta();
+        if (dirty.length === 0 && deleted.length === 0) return;
+        // Re-arm only. drainCatchUp re-diffs on its own (it owns the outer sweep),
+        // so handing it the flag rather than this delta keeps one source of truth;
+        // the duplicate scan is paid only when there IS work, which is the rare case.
+        this.catchUpPending = true;
+        this.runCatchUp();
     }
 
     // Generate the diagnostic report (full seek-report.json + a short seek-report.md
@@ -1446,6 +1558,10 @@ export default class SeekPlugin extends Plugin {
     //   - Deletes/renames/creates are discrete structural events with no blur
     //     equivalent, so we watch them directly; a rename is drop-old + index-new,
     //     which makes a move into an ignored folder a soft-delete.
+    //   - EXTERNAL modifications (vault.on('modify'), issue #8) — Sync, iCloud, git,
+    //     scripts, other plugins — enqueue on the same mtime guard and the same
+    //     idle debounce. The note currently open is excluded: it fires modify on
+    //     every autosave and is already owned by active-leaf-change + blur.
     //   - A BULK flush (> BULK_DELTA_THRESHOLD dirty files = a paste / vault sync /
     //     git checkout, not an edit) is a mini-reindex: progress shows on a Notice,
     //     a live query preempts the embed (shouldContinue), a cold DESKTOP model is
@@ -1458,7 +1574,13 @@ export default class SeekPlugin extends Plugin {
     // closed, NOT per keystroke, so the foreground embed never competes with the
     // live query on the shared iOS process) AND is kicked immediately after a bulk
     // flush (a no-op when nothing's left). Startup reconciliation (reconcileOnLoad)
-    // backstops anything missed while Seek wasn't running.
+    // backstops anything missed while Seek wasn't running, and rearmCatchUpIfStranded
+    // backstops a delta stranded mid-session (the flag cleared with work outstanding).
+    //
+    // Two properties make this safe to feed from an external event stream: the idle
+    // debounce is CAPPED (nextFlushDelay — an uncapped reset never drains a trickling
+    // sync), and every enqueue is mtime-guarded against the stored FileRecord, so an
+    // iCloud mtime re-stamp with identical bytes costs one IDB read and stops there.
     private wireIncrementalIndexing(): void {
         this.lastActiveFile = this.app.workspace.getActiveFile();
 
@@ -1467,6 +1589,31 @@ export default class SeekPlugin extends Plugin {
             const left = this.lastActiveFile;
             this.lastActiveFile = this.app.workspace.getActiveFile();
             if (left) void this.enqueueIfDirty(left);
+        }));
+
+        // EXTERNAL edits (issue #8). active-leaf-change + blur cover the note the
+        // user is editing, and nothing else: a change to a file they never open —
+        // Obsidian Sync, iCloud, git pull, a script, the CLI, another plugin — was
+        // invisible to the live index, and only reconcileOnLoad at the NEXT plugin
+        // load ever picked it up. That is the "reindexes every launch" report: the
+        // whole between-session change set arriving as one startup backlog.
+        //
+        // The watcher was reporting these all along (probed: fires ~15 ms after an
+        // external write, for every file of a 25-file burst, while unfocused AND
+        // while hidden; f.stat.mtime is already fresh in the handler). Seek simply
+        // never subscribed. Routed to the SAME 5-min idle debounce as 'create' —
+        // both need an embed, which is what separates them from the model-free
+        // delete/rename fast path.
+        this.registerEvent(this.app.vault.on('modify', (f) => {
+            if (!(f instanceof TFile) || !isIndexableFile(f, this.settings.indexBases)) return;
+            // Skip the note being edited right now: every editor autosave fires
+            // modify, so enqueueing here would cost an IDB read per save and re-arm
+            // the idle debounce mid-thought — exactly what "index the note you
+            // LEAVE" exists to avoid. The active file is owned by
+            // active-leaf-change and the blur handler, including when the change
+            // came from outside; this only defers it to one of those, never drops it.
+            if (f.path === this.app.workspace.getActiveFile()?.path) return;
+            void this.enqueueIfDirty(f);
         }));
 
         // Structural events — discrete, rare, no blur equivalent.
@@ -1512,10 +1659,17 @@ export default class SeekPlugin extends Plugin {
     }
 
     // 5-min idle debounce for edits: resets on every enqueue, so flipping back to
-    // keep writing pushes the flush out rather than firing mid-thought.
+    // keep writing pushes the flush out rather than firing mid-thought — but only
+    // up to MAX_DIRTY_WAIT_MS from the oldest un-flushed enqueue. Uncapped, a sync
+    // that dribbles files in slower than the window (the normal shape of Obsidian
+    // Sync / iCloud catching up, now that 'modify' feeds this queue) would re-arm
+    // the timer forever and never drain. See flush-schedule.ts.
     private scheduleFlush(): void {
+        const now = Date.now();
+        if (this.firstDirtyAt === 0) this.firstDirtyAt = now;
         if (this.idleTimer != null) window.clearTimeout(this.idleTimer);
-        this.idleTimer = window.setTimeout(() => { this.idleTimer = null; void this.flushDirty(); }, IDLE_FLUSH_MS);
+        const delay = nextFlushDelay(now, this.firstDirtyAt);
+        this.idleTimer = window.setTimeout(() => { this.idleTimer = null; void this.flushDirty(); }, delay);
     }
 
     // Short debounce for structural changes — model-free, so flush them soon
@@ -1567,6 +1721,7 @@ export default class SeekPlugin extends Plugin {
         try {
             const dirty = [...this.dirtyQueue];
             const deleted = [...this.deletedQueue];
+            this.incrementalFiles = dirty.length;
             // Snapshot each dirty file's mtime so the cleanup below can tell "this
             // exact version was flushed" from "re-edited during the await". A re-edit
             // bumps the mtime and enqueueIfDirty re-adds the path; a blind delete
@@ -1646,9 +1801,15 @@ export default class SeekPlugin extends Plugin {
                 const current = f instanceof TFile ? f.stat.mtime : -1;
                 if (current === dirtyMtimes.get(p)) this.dirtyQueue.delete(p);
             }
+            // Restart the max-wait clock only if the queue actually emptied. A
+            // partial drain (mobile deferEmbed, a query preemption, or a path
+            // re-edited mid-flush) keeps its ORIGINAL deadline — otherwise every
+            // partial flush would hand the remainder a fresh 15 minutes.
+            if (this.dirtyQueue.size === 0) this.firstDirtyAt = 0;
         } catch (e) {
             await this.logger.appendError('flushDirty', e).catch(() => {});
         } finally {
+            this.incrementalFiles = 0;
             this.popTaskContext('indexing');
             this.flushing = false;
         }
@@ -1763,6 +1924,92 @@ export default class SeekPlugin extends Plugin {
         }
     }
 
+    // ── Companion Seek Logger event relay ────────────────────────────────────
+    // Re-broadcast settled searches and result-opens on Obsidian's workspace event
+    // bus so a SEPARATELY-installed private "seek-logger" plugin can capture real
+    // usage for offline eval harvesting. Generic + innocuous: with no companion
+    // installed these are zero-listener no-ops, and Seek persists nothing new here
+    // (it already logs the same query/click to its own NDJSON via `this.logger`).
+    // Engine identity is attached here (not in the modal) so pluginIdentity() stays
+    // in the plugin; the companion snapshots content-stable anchors itself at
+    // receive time. A listener throw must never reach the search/open path.
+    // Gated by the hidden searchEventRelay setting (OFF in the public build).
+    private emitSeekSearch(entry: SearchEntry, shown: ScoredChunk[]): void {
+        if (!this.settings.searchEventRelay) return;
+        try {
+            (this.app.workspace as unknown as { trigger(name: string, ...data: unknown[]): void }).trigger('seek:search', {
+                v: 1,
+                searchId: entry.searchId,
+                timestamp: entry.timestamp,
+                query: entry.query,
+                cleanedQuery: entry.cleanedQuery,
+                filters: entry.filters,
+                topK: entry.topK,
+                identity: {
+                    ...pluginIdentity(),
+                    pluginVersion: this.manifest.version,
+                    alpha: entry.alpha,
+                    recencyWeight: entry.recencyWeight,
+                    recencyKey: entry.recencyKey,
+                    bm25Coverage: entry.bm25Coverage,
+                    prefixLastToken: entry.prefixLastToken,
+                    synonymExpansion: entry.synonymExpansion,
+                    searchableProperties: entry.searchableProperties,
+                    headingsField: entry.headingsField,
+                    bm25Bound: entry.bm25Bound,
+                },
+                // 50-deep shown list: rich rows the companion keeps for the top 10,
+                // ids-only beyond. `rank` is the display rank (result index), not the
+                // candidate-union rank fusedTop50 carries.
+                shown: shown.map((r, i) => ({
+                    rank: i + 1,
+                    chunk_id: r.chunk_id,
+                    note_path: r.note_path,
+                    title: r.title,
+                    score: r.score,
+                    dense: r.ranking_signals.dense,
+                    denseRaw: r.ranking_signals.denseRaw,
+                    bm25: r.ranking_signals.bm25,
+                    recency: r.ranking_signals.recency,
+                    title_boost: r.ranking_signals.title_boost,
+                    start_line: r.start_line,
+                    heading_path: r.heading_path,
+                    snippet: r.snippet,
+                })),
+            });
+        } catch (e) {
+            console.error('[seek] seek:search relay failed:', e);
+        }
+    }
+
+    private emitSeekOpen(info: ResultOpenInfo): void {
+        if (!this.settings.searchEventRelay) return;
+        const { r, rank, titleNavOpen, newTab, openTarget, searchId, dwellMs } = info;
+        try {
+            (this.app.workspace as unknown as { trigger(name: string, ...data: unknown[]): void }).trigger('seek:result-open', {
+                v: 1,
+                searchId,
+                timestamp: new Date().toISOString(),
+                chunk_id: r.chunk_id,
+                note_path: r.note_path,
+                rank,
+                score: r.score,
+                dense: r.ranking_signals.dense,
+                bm25: r.ranking_signals.bm25,
+                recency: r.ranking_signals.recency,
+                title_boost: r.ranking_signals.title_boost,
+                titleNavOpen,
+                dwellMs,
+                newTab,
+                openTarget,
+                start_line: r.start_line,
+                heading_path: r.heading_path,
+            });
+        } catch (e) {
+            console.error('[seek] seek:result-open relay failed:', e);
+        }
+    }
+
     private openSearchModal(initialQuery = ''): void {
         this.pushTaskContext('search');
         try {
@@ -1780,6 +2027,8 @@ export default class SeekPlugin extends Plugin {
                 () => this.indexNotice(),
                 initialQuery,
                 this.recents,
+                (entry, shown) => this.emitSeekSearch(entry, shown),
+                (info) => this.emitSeekOpen(info),
             ).open();
         } catch (e) {
             // Synchronous failure path (rare — only if the Modal ctor or
@@ -1835,39 +2084,96 @@ export default class SeekPlugin extends Plugin {
     // desktop runs one unbounded burst (no caps). Fire-and-forget; cheap no-op
     // unless something was deferred (catchUpPending) and we're in a safe window.
     private runCatchUp(): void {
-        if (!this.catchUpPending || this.catchUpRunning || !this.embedder.loaded || !this.orchestrator) return;
-        if (activeDocument.hidden || this.indexingBlocked) return;  // never start in a bad window (typing OR a query in flight)
+        void this.drainCatchUpCore();
+    }
+
+    // The awaitable core behind runCatchUp() (fire-and-forget) and the manual resume
+    // (design B, awaited). Returns once the delta drains, or a guard / stop condition
+    // (backgrounded, searching, model cold, peer-ahead, no forward progress) defers the
+    // rest — `pending:true` means "a later trigger re-fires me". onProgress, when
+    // present (manual resume), is MERGED into each burst's opts so reindexDelta streams
+    // the live "Indexed N files" line to the settings tab; catchup.ts is untouched (it
+    // just forwards the opts it's handed). The guards + single-flight make a no-op call
+    // cheap, so fire-and-forget callers can spam it.
+    private async drainCatchUpCore(onProgress?: (msg: string) => void): Promise<{ pending: boolean }> {
+        if (!this.catchUpPending || this.catchUpRunning || !this.embedder.loaded || !this.orchestrator) return { pending: this.catchUpPending };
+        if (activeDocument.hidden || this.indexingBlocked) return { pending: this.catchUpPending };  // never start in a bad window (typing OR a query in flight)
         // Peer-ahead grind-stop: while a newer-version peer index exists, draining the
         // deferred backlog would re-embed (on the iOS main thread) chunks this build will
         // discard the moment it updates. Leave catchUpPending set so the drain resumes
         // automatically once the user updates Seek and peerAhead clears. (This is the exact
         // loop behind the 2026-06-28 mobile bog-down: v7 phone grinding against a v8 sidecar.)
-        if (isMobilePlatform() && this.orchestrator.peerAhead) return;
+        if (isMobilePlatform() && this.orchestrator.peerAhead) return { pending: this.catchUpPending };
         this.catchUpRunning = true;
         const orchestrator = this.orchestrator;
         const mobile = isMobilePlatform();
         const pacer = new CompositorPacer();
-        void (async () => {
-            this.pushTaskContext('catchup');
-            try {
-                const { pending } = await drainCatchUp({
-                    computeDelta: () => orchestrator.computeDelta(),
-                    reindexDelta: (d, del, opts) => orchestrator.reindexDelta(d, del, opts),
-                    isHidden: () => activeDocument.hidden,
-                    isSearchActive: () => this.indexingBlocked,
-                    pace: () => pacer.pace(),
-                    maxFiles: mobile ? CATCHUP_MAX_FILES_PER_BURST : undefined,
-                    budgetMs: mobile ? CATCHUP_BURST_BUDGET_MS : undefined,
-                });
-                this.catchUpPending = pending;
-            } catch (e) {
-                await this.logger.appendError('runCatchUp', e).catch(() => {});
-                this.catchUpPending = true;  // unknown state — let a later trigger retry
-            } finally {
-                this.popTaskContext('catchup');
-                this.catchUpRunning = false;
-            }
-        })();
+        this.pushTaskContext('catchup');
+        try {
+            const { pending } = await drainCatchUp({
+                // Tee the drain's own diff into the status-card counter. The drain
+                // re-diffs between sweeps, so this tracks the REMAINING backlog
+                // rather than freezing at the first count.
+                computeDelta: async () => {
+                    const delta = await orchestrator.computeDelta();
+                    this.incrementalFiles = delta.dirty.length;
+                    return delta;
+                },
+                reindexDelta: (d, del, opts) => orchestrator.reindexDelta(d, del, onProgress ? { ...opts, onProgress } : opts),
+                isHidden: () => activeDocument.hidden,
+                isSearchActive: () => this.indexingBlocked,
+                pace: () => pacer.pace(),
+                maxFiles: mobile ? CATCHUP_MAX_FILES_PER_BURST : undefined,
+                budgetMs: mobile ? CATCHUP_BURST_BUDGET_MS : undefined,
+            });
+            this.catchUpPending = pending;
+            return { pending };
+        } catch (e) {
+            await this.logger.appendError('runCatchUp', e).catch(() => {});
+            this.catchUpPending = true;  // unknown state — let a later trigger retry
+            return { pending: true };
+        } finally {
+            this.incrementalFiles = 0;
+            this.popTaskContext('catchup');
+            this.catchUpRunning = false;
+        }
+    }
+
+    // ── Design B: manual pause / resume of a full reindex ───────────────────────────
+    // Flag the in-flight full pass to stop at its NEXT file boundary. A file already
+    // embedding finishes and commits (nothing is torn mid-commit); everything committed
+    // so far is durable + searchable, the rest stays dirty. No-op unless a full reindex
+    // is actually running — a catch-up drain / delta is not user-pausable (it's already
+    // bounded + self-resuming). The pass returns paused, and runFullReindex latches
+    // `indexPaused`, which the settings tab renders as the Resume affordance.
+    pauseIndexing(): void {
+        if (!this.isIndexing) return;
+        this.indexPauseRequested = true;
+    }
+
+    // Resume a paused reindex by draining the remainder through the ordinary catch-up
+    // path. computeDelta finds the un-embedded (record-less) files — PLUS anything the
+    // user created / edited / renamed / deleted during the pause (it diffs stored
+    // records against the live vault, not a session log) — and reindexDelta embeds ONLY
+    // those; an unchanged committed file matches its stored content hash and is skipped,
+    // never re-embedded. onProgress streams the "Indexed N files" line so the settings
+    // tab can flip "Resuming…" → "Indexing…". Resolves once the remainder drains (or a
+    // stop condition defers it — a background trigger then finishes it). No-op if nothing
+    // is paused.
+    async resumeIndexing(onProgress?: (msg: string) => void): Promise<void> {
+        if (!this.indexPaused || !this.orchestrator) return;
+        this.indexPaused = false;
+        this.indexPauseRequested = false;
+        await this.ensureModelLoaded();
+        this.catchUpPending = true;
+        const { pending } = await this.drainCatchUpCore(onProgress);
+        // A resume that fully drained restored full coverage — mirror the completed
+        // full-reindex path and clear any lingering degraded health. If it deferred
+        // (pending), a later catch-up trigger finishes the tail; leave health as-is.
+        if (!pending) {
+            this.indexHealth = 'healthy';
+            this.degradedReason = null;
+        }
     }
 
     // Persistent-drift escalation from the orchestrator (onCoherenceDrift's re-trip
@@ -2028,13 +2334,28 @@ export default class SeekPlugin extends Plugin {
         try {
             await this.ensureModelLoaded();
             this.orchestrator.invalidateBm25Cache();
+            this.indexPauseRequested = false;   // fresh run; clear any stale request
             const result = await this.orchestrator.reindexAll(opts?.onProgress, {
                 // 3A soft preempt: the full pass pauses between files while the user
                 // types / a query embed is in flight — the same indexingBlocked
                 // signal every other indexing path honours — then resumes. It never
                 // aborts (a full reindex must finish; see embedAndCommitFiles).
                 shouldContinue: () => !this.indexingBlocked,
+                // Design B manual pause: polled at loop-top; when set the pass breaks
+                // out, commits what it started, and returns paused (below).
+                isPaused: () => this.indexPauseRequested,
             });
+            // Manual pause: the pass returned a PARTIAL index (design B). Don't claim a
+            // completed reindex — latch `indexPaused` so the settings tab shows the
+            // Resume affordance, and skip the "terminal recovery" health/version resets
+            // below (they belong to a pass that actually saw the whole corpus). The
+            // committed files are durable + searchable; resume finishes the rest.
+            if (result.paused) {
+                this.indexPauseRequested = false;
+                this.indexPaused = true;
+                new Notice(`Seek: indexing paused · ${result.filesIndexed} files done — resume to finish.`, 6000);
+                return true;
+            }
             const summary = [
                 result.pass ? '✅' : '❌',
                 `${result.filesIndexed} files`,
@@ -2105,6 +2426,11 @@ export default class SeekPlugin extends Plugin {
                 if (entries[i].type !== 'index-complete') continue;
                 const ic = entries[i] as IndexCompleteEntry;
                 if (ic.mode !== 'full') continue;
+                // A user-paused pass (design B) committed only part of the corpus — it
+                // is not a completed full index, so it must not stamp "last full index".
+                // Its remainder finishes via an incremental resume, which never claims a
+                // full stamp either; the next uninterrupted full reindex sets it cleanly.
+                if (ic.paused) continue;
                 lastFullAt = ic.timestamp;
                 lastFullDurationMs = ic.totalDurationMs;
                 break;

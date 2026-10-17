@@ -6,7 +6,7 @@ import { MultiFieldBM25, DEFAULT_FIELD_BOOSTS } from './bm25.ts';
 import { buildSynonymMap, type SynonymMap } from './synonyms.ts';
 import { binaryCandidates, packSignBits } from './binary.ts';
 import { dequantizeInt8, type QuantVec } from './quant.ts';
-import type { RecencyOverride, SearchHost } from './engine.ts';
+import type { SearchOverride, SearchHost } from './engine.ts';
 import type { ResidentFrame } from './search-helpers.ts';
 
 export interface MemoryDoc { meta: ChunkMeta; content: string; vec: QuantVec }
@@ -70,7 +70,7 @@ export class MemoryHost implements SearchHost {
         this.vecById = new Map(docs.map(d => [d.meta.chunk_id, d.vec]));
     }
 
-    filterCtx(override?: RecencyOverride): FilterContext {
+    filterCtx(override?: SearchOverride): FilterContext {
         const epsilon = override?.epsilon ?? this.settings.recencyEpsilon;
         return {
             dateField: epsilon > 0 ? { key: this.settings.recencyKey, createdProp: this.settings.createdProp } : null,
@@ -112,6 +112,8 @@ export class MemoryHost implements SearchHost {
         return this.settings.boostedBm25 ? { ...DEFAULT_FIELD_BOOSTS, aliases: 9.0, tags: 2.0, headings: 4.0 } : DEFAULT_FIELD_BOOSTS;
     }
     synonyms() { return this.syn; }
+    // No metadataCache here, so no piped-link dictionary: the v2 phrase valve is inert in the MCP.
+    phraseCache() { return null; }
     // The corpus is immutable here, so the frame/BM25 coupling can't drift.
     onCoherenceDrift() { /* unreachable by construction */ }
     async bgStats() { return null; }

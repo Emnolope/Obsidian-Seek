@@ -35,6 +35,17 @@ export function removeRecent(list: readonly string[], query: string): string[] {
     return list.filter(e => e.toLowerCase() !== norm);
 }
 
+// Pure ↑/↓ index math for the resting-state recent rows. From "nothing
+// highlighted" (-1) the first ↓ lands on the top row and the first ↑ on the
+// last (standard menu entry from either end); once engaged the index steps and
+// clamps at both ends — no wrap, matching the result list's keyboard model. An
+// empty list stays at -1 so the caller no-ops.
+export function nextRecentIndex(current: number, dir: 1 | -1, count: number): number {
+    if (count === 0) return -1;
+    if (current < 0) return dir === 1 ? 0 : count - 1;
+    return Math.min(Math.max(0, current + dir), count - 1);
+}
+
 // localStorage-backed store. All reads/writes are best-effort behind `usable`
 // (private mode, quota): recent searches are chrome, and must never break the
 // modal. A corrupt record is cleared so the store recovers next write instead

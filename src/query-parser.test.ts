@@ -692,46 +692,76 @@ describe('matchesFilters / frontmatter (Obsidian-style: substring + wikilink + q
     });
 });
 
-describe('matchesFilters / dates (day-inclusive, missing→reject)', () => {
+describe('matchesFilters / dates (period-exclusive, missing→reject)', () => {
     const c = makeChunk({ metadata: { created: '2026-05-16', modified: '2026-05-19' } });
 
-    it('after: passes when on/after the bound', () => {
+    it('after: passes when after the bound', () => {
         expect(matchesFilters(c, filters({ dateAfter: '2026-05-01' }), ctx())).toBe(true);
-        expect(matchesFilters(c, filters({ dateAfter: '2026-05-16' }), ctx())).toBe(true); // inclusive of the day itself
+        expect(matchesFilters(c, filters({ dateAfter: '2026-05-15' }), ctx())).toBe(true);
+    });
+
+    it('after: excludes the typed day itself', () => {
+        expect(matchesFilters(c, filters({ dateAfter: '2026-05-16' }), ctx())).toBe(false);
+        const evening = makeChunk({ metadata: { created: '2026-05-16T23:45:00' } });
+        expect(matchesFilters(evening, filters({ dateAfter: '2026-05-16' }), ctx())).toBe(false);
+        const nextMidnight = makeChunk({ metadata: { created: '2026-05-17T00:00:00' } });
+        expect(matchesFilters(nextMidnight, filters({ dateAfter: '2026-05-16' }), ctx())).toBe(true);
     });
 
     it('after: rejects when before the bound', () => {
         expect(matchesFilters(c, filters({ dateAfter: '2026-06-01' }), ctx())).toBe(false);
     });
 
-    it('before: passes when on/before the bound', () => {
+    it('before: passes when before the bound', () => {
         expect(matchesFilters(c, filters({ dateBefore: '2026-05-20' }), ctx())).toBe(true);
-        expect(matchesFilters(c, filters({ dateBefore: '2026-05-16' }), ctx())).toBe(true); // inclusive of the day itself
+        expect(matchesFilters(c, filters({ dateBefore: '2026-05-17' }), ctx())).toBe(true);
     });
 
-    it('before: rejects when after the bound', () => {
-        expect(matchesFilters(c, filters({ dateBefore: '2026-05-10' }), ctx())).toBe(false);
+    it('before: excludes the typed day itself', () => {
+        expect(matchesFilters(c, filters({ dateBefore: '2026-05-16' }), ctx())).toBe(false);
+        const morning = makeChunk({ metadata: { created: '2026-05-16T00:30:00' } });
+        expect(matchesFilters(morning, filters({ dateBefore: '2026-05-16' }), ctx())).toBe(false);
     });
 
-    it('before: includes a same-day afternoon timestamp (the inclusivity fix)', () => {
-        const afternoon = makeChunk({ metadata: { created: '2026-05-16T15:30:00' } });
-        expect(matchesFilters(afternoon, filters({ dateBefore: '2026-05-16' }), ctx())).toBe(true);
-    });
-
-    it('before: includes a same-day LATE-EVENING timestamp (local-time-consistent boundary)', () => {
-        // Regression for a UTC-anchored `before:` bound vs a local-time property
-        // parse: an evening event would fall on the *next* UTC calendar day and
-        // get rejected west of UTC even though it's still the same local day.
-        // Both sides must live in the same (local) frame.
-        const evening = makeChunk({ metadata: { created: '2026-05-16T23:45:00' } });
+    it('before: keeps a late-evening timestamp on the previous day (local-time-consistent boundary)', () => {
+        // Regression for a UTC-anchored bound vs a local-time property parse:
+        // an evening event would fall on the *next* UTC calendar day and land
+        // on the wrong side of the bound west of UTC. Both sides must live in
+        // the same (local) frame.
+        const evening = makeChunk({ metadata: { created: '2026-05-15T23:45:00' } });
         expect(matchesFilters(evening, filters({ dateBefore: '2026-05-16' }), ctx())).toBe(true);
     });
 
-    it('before: a bare year covers the whole year', () => {
-        const dec = makeChunk({ metadata: { created: '2026-12-31' } });
-        expect(matchesFilters(dec, filters({ dateBefore: '2026' }), ctx())).toBe(true);
+    it('before: a year-month excludes that whole month (the Oct 5 report)', () => {
+        const oct5 = makeChunk({ metadata: { created: '2026-10-05' } });
+        expect(matchesFilters(oct5, filters({ dateBefore: '2026-10' }), ctx())).toBe(false);
+        const sep30 = makeChunk({ metadata: { created: '2026-09-30T23:59:00' } });
+        expect(matchesFilters(sep30, filters({ dateBefore: '2026-10' }), ctx())).toBe(true);
+    });
+
+    it('after: a year-month excludes that whole month', () => {
+        const oct31 = makeChunk({ metadata: { created: '2026-10-31T23:59:00' } });
+        expect(matchesFilters(oct31, filters({ dateAfter: '2026-10' }), ctx())).toBe(false);
+        const nov1 = makeChunk({ metadata: { created: '2026-11-01' } });
+        expect(matchesFilters(nov1, filters({ dateAfter: '2026-10' }), ctx())).toBe(true);
+    });
+
+    it('a bare year excludes the whole year on either side', () => {
+        const jan1 = makeChunk({ metadata: { created: '2026-01-01' } });
+        const dec31 = makeChunk({ metadata: { created: '2026-12-31' } });
+        const prev = makeChunk({ metadata: { created: '2025-12-31' } });
         const next = makeChunk({ metadata: { created: '2027-01-01' } });
-        expect(matchesFilters(next, filters({ dateBefore: '2026' }), ctx())).toBe(false);
+        expect(matchesFilters(jan1, filters({ dateBefore: '2026' }), ctx())).toBe(false);
+        expect(matchesFilters(prev, filters({ dateBefore: '2026' }), ctx())).toBe(true);
+        expect(matchesFilters(dec31, filters({ dateAfter: '2026' }), ctx())).toBe(false);
+        expect(matchesFilters(next, filters({ dateAfter: '2026' }), ctx())).toBe(true);
+    });
+
+    it('after:D before:E keeps only the days strictly between', () => {
+        const f = filters({ dateAfter: '2026-05-15', dateBefore: '2026-05-17' });
+        expect(matchesFilters(c, f, ctx())).toBe(true);
+        expect(matchesFilters(makeChunk({ metadata: { created: '2026-05-15' } }), f, ctx())).toBe(false);
+        expect(matchesFilters(makeChunk({ metadata: { created: '2026-05-17' } }), f, ctx())).toBe(false);
     });
 
     it('missing date rejects a date filter', () => {
@@ -741,9 +771,9 @@ describe('matchesFilters / dates (day-inclusive, missing→reject)', () => {
 
     it('the date field follows ctx.dateField (modified vs created)', () => {
         const onModified: FilterContext = { dateField: { key: 'modified', createdProp: 'created' }, numericKeys: new Set() };
-        // created 05-16, modified 05-19 → after:05-18 passes on modified, fails on created.
-        expect(matchesFilters(c, filters({ dateAfter: '2026-05-18' }), onModified)).toBe(true);
-        expect(matchesFilters(c, filters({ dateAfter: '2026-05-18' }), ctx())).toBe(false);
+        // created 05-16, modified 05-19 → after:05-17 passes on modified, fails on created.
+        expect(matchesFilters(c, filters({ dateAfter: '2026-05-17' }), onModified)).toBe(true);
+        expect(matchesFilters(c, filters({ dateAfter: '2026-05-17' }), ctx())).toBe(false);
     });
 
     it('NO filename-date fallback (D4): a dated filename with no property is rejected', () => {

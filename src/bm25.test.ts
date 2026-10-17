@@ -1006,3 +1006,143 @@ describe('fitAsync ≡ fit (main-thread-yield refit, issue #5)', () => {
         expect(JSON.stringify(async_.toJSON())).toBe(JSON.stringify(sync.toJSON()));
     });
 });
+
+// Synonyms v2 Stage 1: caller-resolved phrase mates riding the synonyms
+// override (SearchOverrides.synonyms.phraseMates). The phrase→mate resolution
+// itself lives in synonyms.ts matchPhrases (tested there); THESE tests pin the
+// injection semantics — same m2s path as v1 mates, so discount / fuzzy
+// exclusion / prefix ordering / quality rescale / bound clipping all inherit.
+describe('synonyms v2 phrase mates (per-search overrides)', () => {
+    // "query understanding" → qu, resolved as search.ts would pass it. The
+    // empty v1 map pins the phrase-only gate (phraseMates alone must activate
+    // the wrapper).
+    const QU = { mate: 'qu', sources: ['query', 'understanding'] };
+    const SYNP = { map: new Map<string, string[]>(), weight: 0.8, phraseMates: [QU] };
+
+    it('a phrase mate reaches a doc that only carries the short form', () => {
+        const idx = fitBM([
+            makeChunk('a', 'QU Notes', 'qu roadmap planning'),
+        ]);
+        const without = idx.getScores('query understanding roadmap');
+        const withSyn = idx.getScores('query understanding roadmap', { synonyms: SYNP });
+        expect(without[0]).toBeGreaterThan(0);            // "roadmap" matches either way
+        expect(withSyn[0]).toBeGreaterThan(without[0]);   // the mate adds the qu match
+    });
+
+    it('a mate match credits ALL source slots: mate-only doc → coverage 1.0', () => {
+        // 3-token query, 3-token phrase. Doc 'v' seeds all three tokens into
+        // the index (denominator 3, same trick as the prefix-coverage test);
+        // doc 'm' matches ONLY via the mate yet covers the whole phrase; doc
+        // 'p' matches one real term → 1/3.
+        const P3 = { mate: 'ckg', sources: ['creative', 'knowledge', 'graph'] };
+        const idx = fitBM([
+            makeChunk('v', 'Vocab', 'creative knowledge graph overview'),
+            makeChunk('m', 'Short', 'ckg only here'),
+            makeChunk('p', 'Partial', 'knowledge base'),
+        ]);
+        const { coverage } = idx.getScoresWithCoverage('creative knowledge graph', {
+            synonyms: { map: new Map(), weight: 0.8, phraseMates: [P3] },
+        });
+        expect(coverage[1]).toBe(1);
+        expect(coverage[2]).toBeCloseTo(1 / 3, 8);
+    });
+
+    it('a mate-only match scores at exactly the dictionary discount', () => {
+        // Same field, same length, same df (each term in exactly one doc) —
+        // the only difference is boostTerm, so the ratio is exactly w.
+        const idx = fitBM([
+            makeChunk('a', 'One', 'qu zz'),
+            makeChunk('b', 'Two', 'query zz'),
+        ]);
+        const s = idx.getScores('query understanding', { synonyms: SYNP });
+        expect(s[0]).toBeGreaterThan(0);
+        expect(s[0] / s[1]).toBeCloseTo(0.8, 6);
+    });
+
+    it('first-live-term flush keeps PREFIX_LAST_TOKEN on the true last token', () => {
+        // The mate flushes with the FIRST query term, so the final token
+        // "rearch" keeps index terms.length-1 and still prefix-derives
+        // "rearchitecture" — a doc reachable only through that derivation.
+        const idx = fitBM([
+            makeChunk('a', 'Rearchitecture', 'design doc'),
+        ]);
+        const s = idx.getScores('query understanding rearch', { synonyms: SYNP, prefix: PREFIX_LAST_TOKEN });
+        expect(s[0]).toBeGreaterThan(0);
+    });
+
+    it('a phrase mate that is already a query term is never injected (scores identical)', () => {
+        const idx = fitBM([
+            makeChunk('a', 'QU', 'qu query understanding notes'),
+        ]);
+        const without = idx.getScores('query understanding qu');
+        const withSyn = idx.getScores('query understanding qu', { synonyms: SYNP });
+        expect(withSyn[0]).toBe(without[0]);
+    });
+
+    it('phrase mates stay dictionary-exact under fuzzy; non-mates still delegate', () => {
+        // Mate "granite" must never fuzzy-derive (edit-1 "granitz" doc stays
+        // 0) while a typo'd real query term still rescues through
+        // FUZZY_BY_LENGTH — the same delegate-don't-return contract as v1.
+        const G = { mate: 'granite', sources: ['embedding', 'model'] };
+        const idx = fitBM([
+            makeChunk('a', 'A', 'granitz stub'),
+            makeChunk('b', 'B', 'embedding overview'),
+        ]);
+        const opts = { synonyms: { map: new Map<string, string[]>(), weight: 0.8, phraseMates: [G] }, fuzzy: FUZZY_BY_LENGTH };
+        const s = idx.getScores('embedding model', opts);
+        expect(s[0]).toBe(0);                              // mate fuzzy-excluded
+        const typo = idx.getScores('embeddink model', opts);
+        expect(typo[1]).toBeGreaterThan(0);                // non-mate delegates to the ladder
+    });
+
+    it('×quality rescale stays exact with a phrase mate (source + mate = sum of parts)', () => {
+        // Same isolation as the v1 rescale test: doc Y matches a real term AND
+        // the mate (quality 2); X and Z isolate the two single-term scores.
+        const idx = fitBM([
+            makeChunk('x', 'One', 'query zz'),
+            makeChunk('y', 'Two', 'query qu'),
+            makeChunk('z', 'Three', 'zz qu'),
+        ]);
+        const s = idx.getScores('query understanding', { synonyms: SYNP });
+        expect(s[1]).toBeCloseTo(s[0] + s[2], 6);
+    });
+
+    it('v1 token mates and v2 phrase mates compose in one query', () => {
+        const both = {
+            map: new Map([['lr', ['lightroom']]]),
+            weight: 0.8,
+            phraseMates: [QU],
+        };
+        const idx = fitBM([
+            makeChunk('a', 'Lightroom', 'lightroom release'),
+            makeChunk('b', 'QU', 'qu roadmap'),
+        ]);
+        const s = idx.getScores('lr query understanding', { synonyms: both });
+        expect(s[0]).toBeGreaterThan(0);   // v1 mate lightroom fired
+        expect(s[1]).toBeGreaterThan(0);   // v2 phrase mate qu fired
+    });
+
+    it('getQueryBound parity: phrase mates are numerator-only (bound unchanged)', () => {
+        const idx = fitBM([
+            makeChunk('a', 'QU Notes', 'qu query understanding roadmap'),
+        ]);
+        const q = 'query understanding roadmap';
+        const plain = idx.getScoresWithCoverage(q);
+        const withSyn = idx.getScoresWithCoverage(q, { synonyms: SYNP });
+        expect(withSyn.bound).toBe(plain.bound);
+        expect(withSyn.bound).toBeGreaterThan(0);
+    });
+
+    it('the wrapper activates on phraseMates alone (empty v1 map) and stays inert when both are empty', () => {
+        const idx = fitBM([
+            makeChunk('a', 'QU', 'qu notes'),
+        ]);
+        // Active: phrase-only override injects the mate.
+        const active = idx.getScores('query understanding', { synonyms: SYNP });
+        expect(active[0]).toBeGreaterThan(0);
+        // Inert: empty map + no phraseMates → identical to no override at all.
+        const inert = idx.getScoresWithCoverage('query understanding', { synonyms: { map: new Map(), weight: 0.8, phraseMates: [] } });
+        const plain = idx.getScoresWithCoverage('query understanding');
+        expect(inert).toEqual(plain);
+    });
+});

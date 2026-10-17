@@ -11,6 +11,7 @@
 import { App, Modal, Notice, Platform, TFile, MarkdownView, MarkdownRenderer, Component, setIcon } from 'obsidian';
 import type { ScoredChunk, SearchEntry, ClickEntry, SeekSettings } from './types';
 import type { RecentSearches } from './recents';
+import { nextRecentIndex } from './recents';
 import { MATCH_STRENGTH_MIN_NOTES } from './types';
 import type { SearchOrchestrator } from './search';
 import type { SeekLogger } from './logger';
@@ -60,13 +61,25 @@ const REVEAL_MARGIN_PX = 300;
 // the note instead of scrolling to the matched chunk. Coverage semantics come
 // from fusion.ts coverage(): any nonzero value already means EVERY query token
 // hit the title (full-coverage gate), and the magnitude is precision against
-// the title's token count. 0.5 separates "the query is most of this title"
-// ("seek chunk" → "Seek Chunk-Size Sweep", 2/4) from "my words appear somewhere
-// in a ten-word title" (2/10 task-note matches), and single-token queries only
-// clear it on near-exact titles. Extra tokens beyond the title zero coverage
-// entirely — "seek chunk verdict" keeps the normal chunk jump — so passage
-// intent is protected by construction, not by this threshold.
-export const TITLE_NAV_COVERAGE_MIN = 0.5;
+// the title's token count — coverage = |query ∩ title| / |title|.
+//
+// 0.25 (was 0.5 until 2026-07-19) admits the single strong token that IS the
+// note's subject: "chunking" → "Seek Chunking Improvement Plan" is 1/4 = 0.25,
+// a known-item lookup the old 0.5 rejected because it demanded the query be at
+// least HALF the title — which no single-token query can be against a 3+ word
+// title. The lowered bar still separates navigation from incidental mention:
+// the documented false positive it must exclude is "my words appear somewhere
+// in a ten-word task-note title" (2/10 = 0.2 < 0.25), and passage intent is
+// still protected by construction — an extra query token outside the title
+// zeroes coverage entirely ("seek chunk verdict" keeps the normal chunk jump).
+//
+// This is a TITLE-LENGTH RATIO, so it stays fragile at the long end by design:
+// a single token against a 5+ word title (≤0.2) still jumps to the passage,
+// indistinguishable here from the 2/10 incidental class. A truly length-
+// independent gate would need a term-SPECIFICITY signal (IDF from the BM25
+// index) to tell a distinctive subject token from a common one; that is a
+// larger, separately-evaluated change and is deliberately NOT attempted here.
+export const TITLE_NAV_COVERAGE_MIN = 0.25;
 
 // Recover the raw [0,1] title coverage from the weighted contribution that
 // enters `final`: title_boost is navTitleBoost·coverage (fusion.ts), so divide
@@ -201,6 +214,22 @@ export interface IndexBanner {
     showAction: boolean;
 }
 
+// Passed to the companion Seek Logger's onResultOpen callback when a result is
+// opened from the modal. Everything eval-specific (identity anchors, dwell,
+// session correlation) is derived by the companion; the modal just reports which
+// result was opened, at what rank, and how (title-nav intent + open target).
+export interface ResultOpenInfo {
+    r: ScoredChunk;
+    rank: number;
+    titleNavOpen: boolean;
+    newTab: boolean;
+    openTarget: 'same' | 'tab' | 'split' | 'window';
+    // Authoritative correlation key + dwell, reused from the ClickEntry Seek
+    // already builds — the companion doesn't have to re-derive them for Seek opens.
+    searchId: string;
+    dwellMs: number;
+}
+
 export class SeekSearchModal extends Modal {
     private orchestrator: SearchOrchestrator;
     private logger: SeekLogger;
@@ -234,6 +263,15 @@ export class SeekSearchModal extends Modal {
     // The highlighted row the keyboard model acts on. Driven by ↑/↓ (from the
     // field) and by mouse hover; clamped to the result count on every render.
     private selectedIndex = 0;
+    // The resting-state twin of `selectedIndex`: the highlighted recent-search
+    // row. A separate axis because recents and results never share the screen —
+    // recents show only when there are no live results. Each entry pairs the row
+    // element with its serialized query so ↑/↓ can paint a highlight and Enter
+    // can re-run it. -1 means nothing is highlighted yet (the clean resting look
+    // in the screenshot); the first ↓ lands on 0, the first ↑ on the last row.
+    // Both fields are rebuilt by renderRecents and dropped by clearRows.
+    private recentEls: { el: HTMLElement; query: string }[] = [];
+    private recentIndex = -1;
     // Infinite-scroll window: `currentResults` holds up to MAX_RESULTS fetched
     // rows, but only the first `shownCount` are materialized as DOM rows. A
     // sentinel at the list's tail, watched by `revealObserver`, grows the window
@@ -319,6 +357,14 @@ export class SeekSearchModal extends Modal {
         // Optional (absent in tests / headless) — null disables both capture
         // and the resting-state rows.
         private recents: RecentSearches | null = null,
+        // Eval-capture callbacks for the companion Seek Logger plugin (absent in
+        // tests / headless). onSearchEvent fires once per settled render with the
+        // SearchEntry + the 50-deep shown results; onResultOpen fires when a result
+        // is opened, carrying the open modifiers. Kept generic — all eval-specific
+        // logic (anchors, debounce, keystroke chain, non-Seek opens) lives in the
+        // companion, which subscribes via the plugin's workspace.trigger relay.
+        private onSearchEvent?: (entry: SearchEntry, shown: ScoredChunk[]) => void,
+        private onResultOpen?: (info: ResultOpenInfo) => void,
     ) {
         super(app);
         this.orchestrator = orchestrator;
@@ -678,6 +724,12 @@ export class SeekSearchModal extends Modal {
             this.latestSearchEntry = entry;
             this.latestResultsShown = results;
             this.latestSearchCompletedAt = performance.now();
+            // Relay the settled search to the companion logger (no-op if absent).
+            // `results` is the 50-deep shown list (MAX_RESULTS) — the ids-to-depth-50
+            // set the eval harvest wants, richer than SearchEntry.fusedTop50 (depth 10
+            // unless verboseTrace). Fired before renderResults so a paint throw can't
+            // drop the event.
+            this.onSearchEvent?.(entry, results);
             this.renderResults(results);
         } catch (e) {
             if (id !== this.currentSearch || this.closed) return;
@@ -733,7 +785,7 @@ export class SeekSearchModal extends Modal {
         const items = this.recents?.list() ?? [];
         if (!this.resultsEl || items.length === 0) return;
         const box = this.resultsEl.createDiv({ cls: 'seek-recents' });
-        for (const q of items) {
+        items.forEach((q, i) => {
             const row = box.createDiv({ cls: 'seek-recent' });
             setIcon(row.createSpan({ cls: 'seek-recent-icon' }), 'history');
             row.createSpan({ cls: 'seek-recent-text', text: q });
@@ -746,11 +798,18 @@ export class SeekSearchModal extends Modal {
                 this.renderResting();
                 this.field?.focus(); // the span click blurred the editable
             });
-            row.addEventListener('click', () => {
-                this.field?.focus();
-                this.field?.setQuery(q);
+            row.addEventListener('click', () => this.applyRecent(q));
+            // Hover shares the one highlight with the keyboard (as the result
+            // rows do), so a stationary keyboard selection and the mouse can't
+            // paint two rows at once — the reason .seek-recent's highlight is
+            // driven by .is-selected, not a standalone CSS :hover. The result
+            // list's mousemove↔scroll feedback loop can't arise here: recents
+            // never scroll (RECENTS_CAP rows), so no scroll-into-view is needed.
+            row.addEventListener('mousemove', () => {
+                if (this.recentIndex !== i) { this.recentIndex = i; this.applyRecentSelection(); }
             });
-        }
+            this.recentEls.push({ el: row, query: q });
+        });
     }
 
     // Full-replace the results area with a single status line. Resets the row
@@ -865,6 +924,12 @@ export class SeekSearchModal extends Modal {
     private clearRows(): void {
         this.rows = [];
         this.shownCount = 0;
+        // Drop the recents keyboard model too — empty() below detaches those rows,
+        // and every non-resting render (skeleton/status/no-index) routes through
+        // here, so this is the one place that guarantees the ↑/↓ handlers never act
+        // on stale/detached recent rows. renderRecents repopulates on the way back in.
+        this.recentEls = [];
+        this.recentIndex = -1;
         // empty() will drop the sentinel node too; unobserve + forget it first so
         // the observer isn't left holding a detached element.
         if (this.sentinelEl) this.revealObserver?.unobserve(this.sentinelEl);
@@ -1180,7 +1245,9 @@ export class SeekSearchModal extends Modal {
     // ---- keyboard selection model ----
 
     private moveSelection(dir: 1 | -1): void {
-        if (this.currentResults.length === 0) return;
+        // Resting state (no live results): ↑/↓ walk the recent-search rows instead
+        // of the — currently empty — result list.
+        if (this.currentResults.length === 0) { this.moveRecentSelection(dir); return; }
         const next = Math.min(Math.max(0, this.selectedIndex + dir), this.currentResults.length - 1);
         if (next === this.selectedIndex) return;
         // Arrowing into the not-yet-rendered window pulls the next page in first,
@@ -1212,8 +1279,44 @@ export class SeekSearchModal extends Modal {
     }
 
     private openSelected(newTab: boolean): void {
+        // Resting state: Enter re-runs the highlighted recent search. newTab is
+        // irrelevant here — running a recent fills the query field, it doesn't
+        // open a note — so it's ignored.
+        if (this.currentResults.length === 0) { this.runSelectedRecent(); return; }
         const r = this.currentResults[this.selectedIndex];
         if (r) void this.openResult(r, this.selectedIndex + 1, newTab);
+    }
+
+    // ---- resting-state recent-search keyboard model ----
+    // (parallel to the result model above; only ever engaged when no live
+    // results are showing — see the guards in moveSelection / openSelected.)
+
+    private moveRecentSelection(dir: 1 | -1): void {
+        const next = nextRecentIndex(this.recentIndex, dir, this.recentEls.length);
+        if (next === this.recentIndex) return;
+        this.recentIndex = next;
+        this.applyRecentSelection();
+    }
+
+    // Paint the highlighted recent row. No scroll-into-view: the list is capped
+    // at RECENTS_CAP rows and never scrolls, so (unlike applySelection) there's
+    // nothing to chase off-screen.
+    private applyRecentSelection(): void {
+        this.recentEls.forEach((r, i) => r.el.toggleClass('is-selected', i === this.recentIndex));
+    }
+
+    // Enter on a highlighted recent (or a click, via renderRecents): re-run the
+    // stored query through the field's setQuery — the same deep-link seeding path
+    // a typed query takes, so a serialized `#tag`/`[k:v]` query re-pills and fires
+    // exactly as if typed. A no-op when nothing is highlighted (recentIndex -1).
+    private runSelectedRecent(): void {
+        const item = this.recentIndex >= 0 ? this.recentEls[this.recentIndex] : undefined;
+        if (item) this.applyRecent(item.query);
+    }
+
+    private applyRecent(query: string): void {
+        this.field?.focus();
+        this.field?.setQuery(query);
     }
 
     // The alt-open destination (⌘/Ctrl+Enter / ⌘/Ctrl+click): the user's
@@ -1280,7 +1383,7 @@ export class SeekSearchModal extends Modal {
         // Emit click event BEFORE opening the file — the file-open switches
         // workspace state and might cancel pending work. We don't await the
         // logger write so click latency stays imperceptible.
-        this.emitClick(r, rank, titleNav);
+        this.emitClick(r, rank, titleNav, newTab, newTab ? this.altOpenTarget() : 'same');
         this.captureRecent();
 
         const file = this.app.vault.getAbstractFileByPath(r.note_path);
@@ -1413,7 +1516,7 @@ export class SeekSearchModal extends Modal {
         }
     }
 
-    private emitClick(r: ScoredChunk, rank: number, titleNavOpen: boolean): void {
+    private emitClick(r: ScoredChunk, rank: number, titleNavOpen: boolean, newTab: boolean, openTarget: 'same' | 'tab' | 'split' | 'window'): void {
         const entry = this.latestSearchEntry;
         if (!entry) return; // stale render or no search context — drop
         const dwellMs = this.latestSearchCompletedAt > 0
@@ -1438,5 +1541,7 @@ export class SeekSearchModal extends Modal {
         };
         // Fire-and-forget; click latency matters more than a guaranteed write.
         this.logger.append(click).catch(e => console.error('[seek] click log failed:', e));
+        // Relay to the companion logger with the open modifiers (no-op if absent).
+        this.onResultOpen?.({ r, rank, titleNavOpen, newTab, openTarget, searchId: click.searchId, dwellMs: click.dwellMs });
     }
 }

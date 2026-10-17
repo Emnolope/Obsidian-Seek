@@ -2,6 +2,32 @@
 
 All notable changes to Seek are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.2.1
+
+### Added
+- **A Seek search button in the ribbon.** It opens the search modal, like the Search command. On a phone you can make it the one-tap button in the bottom navigation bar under Settings → Appearance → Quick access ribbon item. Thanks to RudolfChristen for the suggestion ([#9](https://github.com/ryan-manor/Obsidian-Seek/issues/9)).
+
+### Fixed
+- The GitHub link at the bottom of Seek's settings pointed at an old repository. Thanks to GaryLee1101 for the fix ([#6](https://github.com/ryan-manor/Obsidian-Seek/issues/6)).
+
+## 1.2.0
+
+Indexing and search quality release, headlined by a fix for a community bug report ([#8](https://github.com/ryan-manor/Obsidian-Seek/issues/8)), thank you! No reindex is needed, since the index format is unchanged.
+
+### Added
+- **Pause and resume a full reindex.** The reindex progress row in settings now has a Pause button. Everything indexed before the pause is kept, and the rest stays queued. Resuming finishes only the notes that are still missing, and also picks up any notes you created, edited, or deleted while it was paused.
+- **The reindex progress row says whether it is running on the GPU or the CPU.** A CPU run is roughly half the speed of WebGPU, so on a large vault a slow CPU reindex could look like a hang. The row now reads "Indexing on GPU (WebGPU)" or "Indexing on CPU" once the model has loaded.
+- **Recent searches are keyboard navigable.** With the query field empty, ↑/↓ moves through the recent searches and Enter runs the highlighted query.
+
+### Changed
+- **Changes made outside the editor are now indexed as they happen.** Seek watched for notes being created, deleted, and renamed, but not for notes being modified, so an edit that arrived from Obsidian Sync, iCloud, `git pull`, a script, or another plugin went unnoticed until Seek next loaded.
+- **Synonyms now cover the names your vault uses most.** Seek builds its synonym dictionary from note aliases, skipped terms which were overly frequent to avoid clogging up queries with common terms. After more evaluation this logic has been relaxed, and utilizes more of Aliases in more queries. 
+- **A single-word query naming a note's subject now opens that note at the top.** Since 1.1.0, a query made up entirely of title words opens the note at the top rather than jumping to the matched section, but only when the query covered at least half the title. This has been changed and single word queries now default to the top of matching notes on click. A query with any word that is not in the title still jumps to the best-matching section.
+- **`before:` and `after:` now exclude the date you type.** Both filters used to include the whole period, so `before:2026-10` still matched a note from October 5. Now `before:2026-10` means through September and `after:2026-10` means from November on, and the same goes for a bare year or a single day. A query that relied on the old behavior needs its date moved by one period.
+
+### Other
+- Logging report schema bumped to v18. It now records paused reindex passes and phrase-synonym telemetry.
+
 ## 1.1.3
 
 Performance release for editing notes in a large vault, prompted by a community bug report and the diagnostics shared with it. Thank you! No reindex is needed, since the index format is unchanged.

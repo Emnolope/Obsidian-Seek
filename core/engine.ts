@@ -3,7 +3,7 @@
 import type { ChunkMeta, ScoredChunk, SearchEntry, QueryFilters, FilterContext, SeekSettings } from './types.ts';
 import { cleanDenseText } from './dense-clean.ts';
 import { MultiFieldBM25, FUZZY_BY_LENGTH, PREFIX_LAST_TOKEN, BM25_COVERAGE_POW } from './bm25.ts';
-import { SYNONYM_WEIGHT, type SynonymMap } from './synonyms.ts';
+import { SYNONYM_WEIGHT, matchPhrases, type SynonymMap, type PhraseSynonymMap } from './synonyms.ts';
 import { rank, cosineScores, DEFAULT_RANKING_CONFIG } from './ranker.ts';
 import { recencyDate } from './fusion.ts';
 import { browseOrder } from './fusion.ts';
@@ -16,18 +16,23 @@ import { parseQuery, compileMatcher, excludedNotePaths } from './query-parser.ts
 import { buildPassageTerms } from './passage.ts';
 import { alignCandidate, buildSelectionMask, frameBm25Coherent, dedupByPath, topKByScore, makeSnippet, type ResidentFrame } from './search-helpers.ts';
 
-// fork 1.1.3 src/search.ts:202 RecencyOverride
-// Per-call override of the recency knobs; a call argument, never written into settings, so concurrent searches can't see each other's override.
-export interface RecencyOverride {
+// fork 1.1.3 src/search.ts:202 RecencyOverride (upstream renamed it SearchOverride in 1.2.0; we follow)
+// Per-call override of the search knobs; a call argument, never written into settings, so concurrent searches can't see each other's override.
+export interface SearchOverride {
     epsilon?: number;
     halfLifeDays?: number;
+}
+
+// fork 1.2.1 src/search.ts:202 ExperimentOverride (new upstream interface, same call-local design as SearchOverride)
+export interface ExperimentOverride {
+    synonymsV2?: boolean;
 }
 
 export interface SearchHost {
     // Read live on every query so a settings change applies to the next search with no reindex.
     readonly settings: SeekSettings;
     // numericKeys is vault-specific (Obsidian's property registry), so the host owns it.
-    filterCtx(override?: RecencyOverride): FilterContext;
+    filterCtx(override?: SearchOverride): FilterContext;
     // null frame = no usable index yet. wasCached feeds the binaryCacheHit telemetry.
     frame(): Promise<{ frame: ResidentFrame | null; wasCached: boolean }>;
     bodies(ids: string[]): Promise<Array<string | null | undefined>>;
@@ -42,6 +47,8 @@ export interface SearchHost {
     bm25(): MultiFieldBM25 | null;
     bm25Boosts(): Record<string, number>;
     synonyms(): SynonymMap | null;
+    // v2 phrase dictionary, built lazily by the host on first use (needs Obsidian's metadataCache); null = no link source, e.g. the MCP.
+    phraseCache(): PhraseSynonymMap | null;
     onCoherenceDrift(where: string): void;
     bgStats(): Promise<{ mean: number; std: number } | null>;
     log(entry: SearchEntry): Promise<void>;
@@ -126,8 +133,8 @@ function emptySearchEntry(
 // gold that exact dense itself caps at. Skipping them would regress
 // recall vs the old all-chunks scorer.
 //
-// recencyOverride: the seek:search CLI's per-query recencyWeight/
-// recencyHalflife params (see main.ts). Resolved locally into filterCtx/
+// override: the seek:search CLI's per-query recencyWeight/recencyHalflife
+// params (see main.ts). Resolved locally into filterCtx/
 // rankConfig below — deliberately NEVER written into host.settings.
 // host.settings is a single live object shared by every concurrent
 // caller (other CLI calls, the search modal, openTopResult), so an
@@ -136,7 +143,7 @@ function emptySearchEntry(
 // (2026-07-02 review). Passing the override as a call-local argument
 // instead makes overlapping searches independent by construction — no
 // shared mutable state, so nothing to race or leak.
-export async function runSearch(host: SearchHost, query: string, topK = 10, recencyOverride?: RecencyOverride): Promise<{ results: ScoredChunk[]; entry: SearchEntry }> {
+export async function runSearch(host: SearchHost, query: string, topK = 10, override?: SearchOverride, expOverride?: ExperimentOverride): Promise<{ results: ScoredChunk[]; entry: SearchEntry }> {
     const t0 = performance.now();
     const searchId = `${Date.now()}-${query.slice(0, 20)}`;
 
@@ -147,7 +154,7 @@ export async function runSearch(host: SearchHost, query: string, topK = 10, rece
     // FilterContext threads vault-specific facts (Number-typed props, the
     // Recency date field) into the otherwise-pure parser/matcher; same object
     // is reused by compileMatcher so parse and match agree on types/field.
-    const filterCtx = host.filterCtx(recencyOverride);
+    const filterCtx = host.filterCtx(override);
     const { cleanedQuery, filters } = parseQuery(query, filterCtx);
 
     // ---- S0: resident-tier read ------------------------------------
@@ -366,6 +373,16 @@ export async function runSearch(host: SearchHost, query: string, topK = 10, rece
         return { results: [], entry };
     }
     const synEnabled = host.settings.synonymExpansion;
+    // Synonyms v2 valve (default OFF): per-call CLI override wins, settings
+    // otherwise. The phrase dictionary is built lazily on the first search
+    // with the valve on (phraseCache), so OFF costs nothing.
+    const synV2 = expOverride?.synonymsV2 ?? host.settings.synonymsV2;
+    // Phrase-trigger pre-scan (v2 Stage 1): phrase detection cannot ride
+    // MiniSearch's per-token processTerm hook, so the query is scanned HERE
+    // and resolved mates ride the synonyms override below. Scans
+    // cleanedQuery (post filter-strip) so pill syntax never feeds it.
+    const phraseCache = synV2 ? host.phraseCache() : null;
+    const phraseMates = phraseCache ? matchPhrases(cleanedQuery, phraseCache) : [];
     // Coverage = per-doc fraction of distinct query terms matched (soft-AND).
     // Multiplied into raw BM25 just before fusion (candidate loop below) when
     // settings.bm25Coverage is on, so a doc that matched only part of a multi-
@@ -384,10 +401,17 @@ export async function runSearch(host: SearchHost, query: string, topK = 10, rece
         // at ≥3 chars (see bm25.ts PREFIX_LAST_TOKEN).
         fuzzy: host.settings.fuzzyEnabled ? FUZZY_BY_LENGTH : false,
         prefix: host.settings.prefixLastToken ? PREFIX_LAST_TOKEN : false,
-        // Alias-dictionary expansion (experimental, default off): mates
-        // query at the eval-tuned discount; empty dictionary = inert.
-        ...(synEnabled && host.synonyms() && host.synonyms()!.mates.size > 0 && {
-            synonyms: { map: host.synonyms()!.mates, weight: SYNONYM_WEIGHT },
+        // Alias-dictionary expansion (v1) + v2 phrase mates ride ONE
+        // synonyms override: v1 mates at the eval-tuned discount via the
+        // dictionary map, phrase mates pre-resolved by the scan above
+        // (same discount, same m2s path inside bm25). Present when either
+        // side has something to say; empty dictionary = inert.
+        ...(((synEnabled && host.synonyms() && host.synonyms()!.mates.size > 0) || phraseMates.length > 0) && {
+            synonyms: {
+                map: synEnabled && host.synonyms() ? host.synonyms()!.mates : new Map<string, string[]>(),
+                weight: SYNONYM_WEIGHT,
+                ...(phraseMates.length > 0 && { phraseMates }),
+            },
         }),
     });
     const bm25TopIdx = topNIndices(bm25Scores, caps.bm25, mask);
@@ -488,12 +512,12 @@ export async function runSearch(host: SearchHost, query: string, topK = 10, rece
         // "recent" are all settings-driven now — read fresh from host.settings
         // every query, so a UI change takes effect on the NEXT search with no
         // reindex. ε defaults to the 0.02 tiebreaker; raise it for a deliberate
-        // high-recency mode. A query-time override (recencyOverride, from the
-        // seek:search CLI params) is resolved here, per-call, falling back to
-        // host.settings when absent — see the search() doc comment for why
-        // it's a local argument and not a host.settings mutation.
-        recencyEpsilon: recencyOverride?.epsilon ?? host.settings.recencyEpsilon,
-        recencyHalfLifeDays: recencyOverride?.halfLifeDays ?? host.settings.recencyHalfLifeDays,
+        // high-recency mode. A query-time override (from the seek:search CLI
+        // params) is resolved here, per-call, falling back to host.settings
+        // when absent — see the search() doc comment for why it's a local
+        // argument and not a host.settings mutation.
+        recencyEpsilon: override?.epsilon ?? host.settings.recencyEpsilon,
+        recencyHalfLifeDays: override?.halfLifeDays ?? host.settings.recencyHalfLifeDays,
         recencyKey: host.settings.recencyKey,
         createdProp: host.settings.createdProp,
     };
@@ -616,6 +640,9 @@ export async function runSearch(host: SearchHost, query: string, topK = 10, rece
         bm25Coverage: applyCoverage,
         prefixLastToken: host.settings.prefixLastToken,
         synonymExpansion: synEnabled,
+        // v2 valve + fired-count written only when ON (absent ⇒ off), so a
+        // 0 count reads "on, no trigger / dictionary empty" — see types.ts.
+        ...(synV2 && { synonymsV2: true, phraseMatesFired: phraseMates.length }),
         searchableProperties: host.settings.searchableProperties,
         headingsField: host.settings.headingsField,
         // Theoretical BM25 bound for this query (0 = bound had no opinion →
@@ -632,7 +659,6 @@ export async function runSearch(host: SearchHost, query: string, topK = 10, rece
     // flight) → jetsam. The drain now fires from onSearchSessionEnd (query
     // settled / modal closed), wired by the plugin — see drainCatchUp.
 
-    void breakdown;
     return { results, entry };
 }
 

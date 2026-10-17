@@ -189,6 +189,11 @@ export async function embedAndCommit<H>(
     // committed chunks, so a fresh count() would read non-empty on a cold build
     // that hydrated some files and mis-decide sawWholeCorpus. One snapshot, one
     // source. Omitted (reindexAll) = false, harmless since mode==='full' dominates.
+    // isPaused (design B, full mode only): the user hit Pause. Polled at
+    // loop-top; when true the pass breaks out — committing everything already
+    // started, leaving the un-started files record-less (dirty) for the resume
+    // catch-up — and returns with the store OPEN (unlike the disposed break) so
+    // the tail runs and the write mutex releases. Ignored in incremental mode.
     // removedSink / removedBodiesSink / metaPatchSink (chunk-diff commit,
     // issue #5): present only on the incremental delta path. Their presence
     // ENABLES the per-file diff-against-record (the delta's pre-delete is
@@ -197,6 +202,7 @@ export async function embedAndCommit<H>(
     // patches for applyDelta, exactly like addsSink surfaces the commits.
     budget: {
         budgetMs?: number; shouldContinue?: () => boolean; addsSink?: DeltaAdd[]; storeWasEmpty?: boolean;
+        isPaused?: () => boolean;
         removedSink?: string[]; removedBodiesSink?: Map<string, string>;
         metaPatchSink?: Array<{ id: string; meta: ChunkMeta }>;
     } = {},
@@ -225,6 +231,7 @@ export async function embedAndCommit<H>(
     let preemptWedged = false;   // signal judged stuck-false — no more pauses this pass
     let embedRecycles = 0;
     let filesCommitted = 0;
+    let pausedOut = false;   // full-mode only: the user paused and we broke the loop early (design B)
     // The paths whose file-record was ACTUALLY written (commitFile succeeded) — NOT
     // the same as the prefix of started files: an empty/below-min-chunk note or a
     // mid-list skip-error commits nothing yet still advances processedFiles, so a
@@ -611,6 +618,14 @@ export async function embedAndCommit<H>(
         // Any meta stamped for the partial index is still CORRECT (Fix A: current
         // identity, merely incomplete), and the next load's catch-up finishes it.
         if (ctx.disposed) break;
+        // Manual pause (design B, full mode only): the user hit Pause. Break at
+        // loop-top — BEFORE this file's chunks enter the rolling buffers — so the
+        // unconditional bucket drain below commits exactly the files already
+        // started and the un-started files stay record-less (dirty) for the resume
+        // catch-up to finish. Unlike the disposed break the store stays OPEN, so
+        // the tail (bucket drain + meta stamp) runs and the mutex releases cleanly
+        // on return. A file already in flight is never interrupted mid-commit.
+        if (mode === 'full' && budget.isPaused?.()) { pausedOut = true; break; }
         // Per-burst budget (incremental catch-up only): stop STARTING new files
         // once the wall-clock ceiling is spent or the app went hidden / search
         // resumed (shouldContinue→false). (The file-count cap is upstream — the
@@ -923,6 +938,12 @@ export async function embedAndCommit<H>(
     if (preemptWaitMs > 500) {
         checksExtra.push(`ℹ️ paused ${(preemptWaitMs / 1000).toFixed(1)} s for live search activity (full-reindex soft preempt)`);
     }
+    // Design B: the user paused this full pass. It is a partial index, not a
+    // completed full reindex — the remaining files stay dirty and resume embeds
+    // exactly them via the catch-up drain (unchanged files are never re-embedded).
+    if (pausedOut) {
+        checksExtra.push(`⏸️ paused by user after ${filesCommitted} file(s) · ${totalChunks} chunk(s) — remaining files stay dirty and finish on resume`);
+    }
     onProgress?.(`Indexed ${filesCommitted} files · ${totalChunks} chunks`);
     await ctx.emitProgress('embed', files.length, files.length, totalChunks, performance.now() - overallStart);
 
@@ -1062,7 +1083,10 @@ export async function embedAndCommit<H>(
     // (WASM has no GPU pool to reclaim); best-effort — a cleanup failure must
     // not fail an otherwise-good index, and recycle() leaves the embedder
     // loaded and usable on success regardless.
-    if (mode === 'full' && ctx.embedder.device === 'webgpu') {
+    // Skipped on a manual pause: resume re-embeds the remainder within seconds
+    // (rebuilding the very pool we'd tear down here), so the teardown is pure
+    // churn — resume's own completion pays it instead.
+    if (mode === 'full' && !pausedOut && ctx.embedder.device === 'webgpu') {
         const recycleStart = performance.now();
         try {
             await ctx.embedder.recycle();
@@ -1111,6 +1135,7 @@ export async function embedAndCommit<H>(
         embedBatchLatencyMs: distributionStats(embedBatchLatencyMs),
         paceWaitMs: parseFloat(paceWaitMs.toFixed(2)),
         pass: (totalChunks > 0 || chunksReconciled > 0) && skipRate <= SKIP_RATE_FAIL,
+        paused: pausedOut,
         checks,
     };
     // Completion beat closes the indexing window: a death AFTER this reads

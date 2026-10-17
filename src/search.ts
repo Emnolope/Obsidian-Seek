@@ -13,8 +13,9 @@ import { snapshotMemory, memoryDelta, distributionStats } from './types';
 import { MarkdownChunker, cyrb53Hex } from './chunker';
 import { cleanDenseText } from './dense-clean';
 import { extractBaseDocs } from './base-extractor';
-import { MultiFieldBM25, DEFAULT_FIELD_BOOSTS, PREFIX_LAST_TOKEN, FUZZY_BY_LENGTH, ANALYZER_VERSION, BM25_COVERAGE_POW } from './bm25';
-import { buildSynonymMap, chunkDeclaresAlias, SYNONYM_WEIGHT, type SynonymMap } from './synonyms';
+import { MultiFieldBM25, DEFAULT_FIELD_BOOSTS, PREFIX_LAST_TOKEN, FUZZY_BY_LENGTH, ANALYZER_VERSION, BM25_COVERAGE_POW, processQueryTerm } from './bm25';
+import { buildSynonymMap, chunkDeclaresAlias, buildPhraseMap, matchPhrases, SYNONYM_WEIGHT, type SynonymMap, type PhraseSynonymMap } from './synonyms';
+import { aggregateLinkPairs, mineLinkPairsByPath, mineLinkPairsForPaths, type LinkPairCount } from './link-dict';
 import { TaskContextTracker } from './task-context';
 import { rank, cosineScores, DEFAULT_RANKING_CONFIG } from './ranker';
 import { browseOrder, recencyDate } from './fusion';
@@ -47,7 +48,7 @@ import { planFileDiff, captureRemovalBodies } from '../core/file-diff';
 import { embedAndCommit, type EmbedCommitCtx, type SidecarFlushJob } from '../core/embed-commit';
 import { applyDelta as applyDeltaCore } from '../core/apply-delta';
 import { shouldIndexPath as shouldIndexPathCore, chunksFor as chunksForCore, computeDelta, UnreadableQuarantine } from '../core/delta';
-import { runSearch, type SearchHost, type RecencyOverride } from '../core/engine';
+import { runSearch, type SearchHost, type SearchOverride, type ExperimentOverride } from '../core/engine';
 import { alignCandidate, buildResidentRerankBlock, chunkMetaEqual, pushDeltaAdds, freshDeltaAdds, appendFrameRows, tombstoneFrameRows, buildSelectionMask, COMPACTION_TOMBSTONE_FRACTION, COHERENCE_SAMPLES, COHERENCE_DRIFT_COOLDOWN_MS, coherenceDriftDecision, shouldDiscardPartialFrame, driftRecoveryDecision, frameBm25Coherent, buildBm25Stamp, bm25StampMatches, dedupByPath, topKByScore, snippetPlainText, makeSnippet, type ResidentFrame, type DeltaAdd, type DriftRecoveryState, type RowSpaceProbe, type Bm25PersistStamp } from '../core/search-helpers';
 export { alignCandidate, buildResidentRerankBlock, chunkMetaEqual, pushDeltaAdds, freshDeltaAdds, appendFrameRows, tombstoneFrameRows, buildSelectionMask, COMPACTION_TOMBSTONE_FRACTION, COHERENCE_SAMPLES, COHERENCE_DRIFT_COOLDOWN_MS, coherenceDriftDecision, shouldDiscardPartialFrame, driftRecoveryDecision, frameBm25Coherent, buildBm25Stamp, bm25StampMatches } from '../core/search-helpers';
 export type { ResidentFrame, DeltaAdd, DriftRecoveryState, RowSpaceProbe, Bm25PersistStamp } from '../core/search-helpers';
@@ -115,7 +116,7 @@ export function shouldIndexPath(app: App, settings: SeekSettings, path: string):
 // and read by every concurrent search caller, so mutating it for an
 // override's duration let a concurrent plain search transparently rank
 // against someone else's in-flight override (2026-07-02 review).
-export type { RecencyOverride } from '../core/engine';
+export type { SearchOverride, ExperimentOverride } from '../core/engine';
 
 
 export class SearchOrchestrator {
@@ -251,10 +252,10 @@ export class SearchOrchestrator {
 
     // Full reindex. Drops the database, walks all markdown, re-embeds everything.
     // Serialized against deltas via the write mutex (a delta mid-nuke would throw).
-    async reindexAll(onProgress?: (msg: string) => void, opts: { shouldContinue?: () => boolean } = {}): Promise<IndexCompleteEntry> {
+    async reindexAll(onProgress?: (msg: string) => void, opts: { shouldContinue?: () => boolean; isPaused?: () => boolean } = {}): Promise<IndexCompleteEntry> {
         let result: IndexCompleteEntry;
         try {
-            const inner = await this.coord.runExclusive(() => this.reindexAllInner(onProgress, opts.shouldContinue));
+            const inner = await this.coord.runExclusive(() => this.reindexAllInner(onProgress, opts.shouldContinue, opts.isPaused));
             result = inner.entry;
             // 1C: the pass only PACKAGED its sidecar flush; run it now that the
             // mutex has released, still awaited so "reindexAll resolved ⇒ sidecar
@@ -402,7 +403,7 @@ export class SearchOrchestrator {
         }
     }
 
-    private async reindexAllInner(onProgress?: (msg: string) => void, shouldContinue?: () => boolean): Promise<{ entry: IndexCompleteEntry; sidecarJob: SidecarFlushJob | null }> {
+    private async reindexAllInner(onProgress?: (msg: string) => void, shouldContinue?: () => boolean, isPaused?: () => boolean): Promise<{ entry: IndexCompleteEntry; sidecarJob: SidecarFlushJob | null }> {
         const overallStart = performance.now();
         const memBefore = await snapshotMemory();
 
@@ -464,7 +465,7 @@ export class SearchOrchestrator {
         // files while the user searches — see embedAndCommitFiles' budget comment).
         // The engine's sidecar flush comes back PACKAGED (1C) and rides through to
         // reindexAll, which runs it after the mutex releases.
-        const result = await this.embedAndCommitFiles(files, 'full', onProgress, overallStart, memBefore, { shouldContinue });
+        const result = await this.embedAndCommitFiles(files, 'full', onProgress, overallStart, memBefore, { shouldContinue, isPaused });
 
         // Bump dataGeneration on COMPLETION. main.ts invalidates once BEFORE the
         // reindex, but a search firing during the rebuild then caches the frame /
@@ -486,6 +487,7 @@ export class SearchOrchestrator {
         // See EmbedCommitBudget in core/embed-commit.ts for what each field does.
         budget: {
             budgetMs?: number; shouldContinue?: () => boolean; addsSink?: DeltaAdd[]; storeWasEmpty?: boolean;
+            isPaused?: () => boolean;
             removedSink?: string[]; removedBodiesSink?: Map<string, string>;
             metaPatchSink?: Array<{ id: string; meta: ChunkMeta }>;
         } = {},
@@ -1048,6 +1050,16 @@ export class SearchOrchestrator {
             bumpGeneration: () => this.coord.bumpGeneration(),
             stamp: n => this.stampBm25Cache(n),
             setSynonyms: m => { this.synonymCache = m; },
+            // fork 1.2.1 src/search.ts:2379 SearchOrchestrator.applyDelta (link-pair patch; the mining is host-side, so it lives here not in core)
+            patchLinkPairs: touchedPaths => {
+                if (!this.linkPairCache) return;
+                const mined = mineLinkPairsForPaths(this.app, p => shouldIndexPath(this.app, this.settings, p), touchedPaths);
+                for (const p of touchedPaths) {
+                    const pairs = mined.get(p);
+                    if (pairs) this.linkPairCache.set(p, pairs);
+                    else this.linkPairCache.delete(p);
+                }
+            },
             fallback: (reason, detail) => this.deltaFallback(reason, detail),
             logError: (tag, e) => this.logger.appendError(tag, e),
         }, adds, removedIds, removedBodies, metaPatches);
@@ -1971,11 +1983,11 @@ export class SearchOrchestrator {
     // dictionary lookup) and the date field the recency-gated `before:`/`after:`
     // filters key off. dateField is null when Recency is OFF (recencyEpsilon ≤ 0),
     // which is how the parser knows to leave a typed before:/after: as plain text.
-    // recencyOverride (see search()) resolves the effective epsilon locally so a
+    // override (see search()) resolves the effective epsilon locally so a
     // query-time override never has to touch this.settings to take effect here.
     // See [[Seek Typed-Value Filters Design]].
-    private buildFilterContext(recencyOverride?: RecencyOverride): FilterContext {
-        const epsilon = recencyOverride?.epsilon ?? this.settings.recencyEpsilon;
+    private buildFilterContext(override?: SearchOverride): FilterContext {
+        const epsilon = override?.epsilon ?? this.settings.recencyEpsilon;
         const recencyOn = epsilon > 0;
         return {
             dateField: recencyOn
@@ -1986,8 +1998,8 @@ export class SearchOrchestrator {
     }
 
     // Query pipeline lives in core/engine.ts (shared with the MCP server); this class only supplies the plugin-side ports.
-    async search(query: string, topK = 10, recencyOverride?: RecencyOverride): Promise<{ results: ScoredChunk[]; entry: SearchEntry }> {
-        return runSearch(this.searchHost(), query, topK, recencyOverride);
+    async search(query: string, topK = 10, override?: SearchOverride, expOverride?: ExperimentOverride): Promise<{ results: ScoredChunk[]; entry: SearchEntry }> {
+        return runSearch(this.searchHost(), query, topK, override, expOverride);
     }
 
     private searchHost(): SearchHost {
@@ -2017,6 +2029,7 @@ export class SearchOrchestrator {
             bm25: () => o.bm25Cache,
             bm25Boosts: () => o.bm25FieldBoosts(),
             synonyms: () => o.synonymCache,
+            phraseCache: () => o.ensurePhraseCache(),
             onCoherenceDrift: w => o.onCoherenceDrift(w),
             bgStats: () => o.getDenseBgStats(),
             log: e => o.logger.append(e),
@@ -2249,6 +2262,10 @@ export class SearchOrchestrator {
         this.bm25CacheProps = this.settings.searchableProperties;
         this.bm25CacheHeadings = this.settings.headingsField || this.settings.boostedBm25;
         this.synonymCache = null;
+        // phraseCache derives from this index's df — drop with the synonym
+        // dict. linkPairCache is deliberately KEPT: it derives from
+        // metadataCache, not this index (see the field comment).
+        this.phraseCache = null;
     }
 
     private async ensureBm25(orderedChunks: ChunkMeta[]): Promise<boolean> {
@@ -2295,6 +2312,29 @@ export class SearchOrchestrator {
             this.synonymCache = buildSynonymMap(orderedChunks, t => this.bm25Cache!.termDocFraction(t));
         }
         return hit;
+    }
+
+    // v2 Stage-1 T2 dictionary — built LAZILY, only when the synonymsV2 valve
+    // is on for a search (setting or CLI synv2 override). It ships OFF, so the
+    // default install never pays the mine. The first synv2=true probe after a
+    // re-stamp pays the build (first-call skew; warm the cache before an A/B).
+    // The mine is an O(files) pass over the in-memory metadataCache (no I/O);
+    // before Obsidian resolves the cache it comes back empty — inert, not
+    // wrong, refreshed on the next re-stamp. Runs after ensureBm25, so the v1
+    // dictionary the T1 cross-confirmation reads is already fresh.
+    private ensurePhraseCache(): PhraseSynonymMap | null {
+        if (!this.bm25Cache) return null;
+        if (!this.linkPairCache) {
+            this.linkPairCache = mineLinkPairsByPath(this.app, p => shouldIndexPath(this.app, this.settings, p));
+        }
+        if (!this.phraseCache) {
+            this.phraseCache = buildPhraseMap(
+                aggregateLinkPairs(this.linkPairCache.values()),
+                t => this.bm25Cache!.termDocFraction(t),
+                this.synonymCache ?? undefined,
+            );
+        }
+        return this.phraseCache;
     }
 
     // Cold-start fast path: when the resident BM25 cache is cold for the live
@@ -2589,6 +2629,19 @@ export class SearchOrchestrator {
     // the next search. Nulled with the BM25 cache in invalidateBm25Cache().
     private synonymCache: SynonymMap | null = null;
 
+    // v2 Stage-1 T2 dictionaries (synonyms.ts buildPhraseMap + link-dict.ts).
+    // Built LAZILY by ensurePhraseCache, only when the synonymsV2 valve is on
+    // (both stay null on a default install). Two lifecycles on purpose:
+    //   - phraseCache follows the BM25 cache exactly (its df ceiling reads the
+    //     live index) — nulled by stampBm25Cache like synonymCache;
+    //   - linkPairCache (per NOTE PATH → that note's piped pairs) derives from
+    //     app.metadataCache, NOT this index, so a BM25 re-stamp keeps it and
+    //     applyDelta patches ONLY touched paths in place (a stale pair is a
+    //     WRONG mate — stricter than v1's stale-df tolerance). Nulled only on
+    //     invalidateBm25Cache (full nuke → full re-mine).
+    private phraseCache: PhraseSynonymMap | null = null;
+    private linkPairCache: Map<string, LinkPairCount[]> | null = null;
+
     // BM25 per-field boosts. Eval-tuned constants (bm25.ts DEFAULT_FIELD_BOOSTS)
     // since the per-field sliders were removed 2026-06-08 (low marginal leverage
     // once the coverage navigational boost is in). Passed to getScores per-query;
@@ -2613,6 +2666,8 @@ export class SearchOrchestrator {
         this.bm25CacheGeneration = -1;
         this.bm25CacheChunkCount = -1;
         this.synonymCache = null;
+        this.phraseCache = null;
+        this.linkPairCache = null;
         this.binaryIndex = null;
         // Also drop the resident frame so its ~MB of chunk text doesn't linger
         // past a reindex; the dataGeneration bump already invalidates it, this

@@ -7,7 +7,7 @@
 // top (and, via seek:insert-link, whether a link targets [[Note]] or [[Note#Section]]).
 
 import { describe, it, expect } from 'vitest';
-import { titleNavCoverage } from './search-modal';
+import { titleNavCoverage, TITLE_NAV_COVERAGE_MIN } from './search-modal';
 import type { ScoredChunk } from './types';
 
 // Only ranking_signals.title_boost is read; the rest is scaffolding.
@@ -48,5 +48,37 @@ describe('titleNavCoverage', () => {
     it('reports no coverage for a chunk whose title did not match', () => {
         // titleMatchBoost gates on FULL query coverage, so a partial match stores 0.
         expect(titleNavCoverage(chunk(0), 0.5)).toBe(0);
+    });
+});
+
+// The TITLE_NAV_COVERAGE_MIN boundary itself (openResult / insertResultLink use
+// `titleNavCoverage(r) >= TITLE_NAV_COVERAGE_MIN`). Pins the 2026-07-19 relax
+// from 0.5 → 0.25 so the "chunking" → "Seek Chunking Improvement Plan" case
+// navigates to the doc top instead of scrolling to the reference-dense section.
+describe('TITLE_NAV_COVERAGE_MIN gate', () => {
+    // Reproduce a click decision: the ranker stores title_boost = navTitleBoost
+    // · coverage, so feed that weighted value in and apply the real gate.
+    const NAV_BOOST = 0.5; // "Default" stage
+    const fires = (coverage: number) =>
+        titleNavCoverage(chunk(NAV_BOOST * coverage), NAV_BOOST) >= TITLE_NAV_COVERAGE_MIN;
+
+    it('navigates a single strong token that is the note subject (1/4-token title)', () => {
+        // "chunking" → "Seek Chunking Improvement Plan": the reported case.
+        expect(fires(1 / 4)).toBe(true);
+    });
+
+    it('still excludes an incidental multi-word match in a long title (2/10)', () => {
+        // The documented false positive the threshold must keep out.
+        expect(fires(2 / 10)).toBe(false);
+    });
+
+    it('preserves the cases that navigated under the old 0.5 bar', () => {
+        expect(fires(2 / 4)).toBe(true); // "seek chunk" → "Seek Chunk-Size Sweep"
+        expect(fires(1)).toBe(true);     // exact known-item title
+    });
+
+    it('leaves a single token in a 5+ word title as a passage jump (known fragility)', () => {
+        // Title-length ratio, so 1/5 = 0.2 stays below the bar — passage intent.
+        expect(fires(1 / 5)).toBe(false);
     });
 });

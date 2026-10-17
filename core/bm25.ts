@@ -170,7 +170,18 @@ export interface SearchOverrides {
     // trigger term in the query also queries its mates at `weight` — see the
     // synonym block in getScoresWithCoverage for the mechanics and the
     // semantic deltas vs the eval harness.
-    synonyms?: { map: Map<string, string[]>; weight: number };
+    synonyms?: {
+        map: Map<string, string[]>;
+        weight: number;
+        // v2 Stage 1: per-QUERY phrase-trigger mates, resolved by the CALLER
+        // (search.ts matchPhrases) because phrase detection cannot ride the
+        // per-token processTerm hook — each hook call sees ONE token, and
+        // adjacency is gone by then. Each entry injects `mate` at most once
+        // (flushed on the first surviving query term) and credits EVERY
+        // listed source slot for coverage. `sources` are in processQueryTerm
+        // space and are terms the query actually contains.
+        phraseMates?: Array<{ mate: string; sources: string[] }>;
+    };
 }
 
 // Lucene/Elasticsearch default English stoplist (the 33-word `_english_` set).
@@ -928,22 +939,43 @@ export class MultiFieldBM25 {
         const allStopword = isAllStopwordQuery(query);
         const synMap = opts?.synonyms?.map;
         const synWeight = opts?.synonyms?.weight ?? 1;
-        let mateToSource: Map<string, string> | undefined;
+        // v2 phrase mates (SearchOverrides.synonyms.phraseMates): the caller
+        // already resolved phrase→mate, so this layer only INJECTS. Values are
+        // string[] now — a phrase mate attributes back to EVERY phrase token —
+        // and the v1 per-token path stores singleton arrays. Routing phrase
+        // mates through the SAME m2s inherits fuzzy exclusion, the boostTerm
+        // discount, and the coverage source-mapping for free.
+        const phraseMates = opts?.synonyms?.phraseMates;
+        let mateToSource: Map<string, string[]> | undefined;
         let synProcessTerm: ((term: string) => string | string[] | null) | undefined;
-        if (synMap && synMap.size > 0) {
+        if ((synMap && synMap.size > 0) || (phraseMates && phraseMates.length > 0)) {
             const original = distinctQueryTerms(query);
             const baseProcess = allStopword ? keepStopwordsProcessTerm : processTerm;
-            const m2s = new Map<string, string>();
+            const m2s = new Map<string, string[]>();
+            const pending = [...(phraseMates ?? [])];
             synProcessTerm = (raw: string) => {
                 const t = baseProcess(raw);
                 if (t === null) return null;
-                const mates = synMap.get(t);
-                if (!mates) return t;
                 const out: string[] = [];
-                for (const mate of mates) {
-                    if (original.has(mate) || m2s.has(mate)) continue;
-                    m2s.set(mate, t);
-                    out.push(mate);
+                // Flush pending phrase mates on the FIRST surviving term (the
+                // queue empties once): a mate emitted here can never occupy
+                // terms.length-1, so PREFIX_LAST_TOKEN's position check still
+                // lands on the true final query token. Same dedupe as the
+                // per-token path (review fix #2): a mate the query already
+                // contains would build two specs for one term.
+                while (pending.length > 0) {
+                    const p = pending.shift()!;
+                    if (original.has(p.mate) || m2s.has(p.mate)) continue;
+                    m2s.set(p.mate, p.sources);
+                    out.push(p.mate);
+                }
+                const mates = synMap?.get(t);
+                if (mates) {
+                    for (const mate of mates) {
+                        if (original.has(mate) || m2s.has(mate)) continue;
+                        m2s.set(mate, [t]);
+                        out.push(mate);
+                    }
                 }
                 if (out.length === 0) return t;
                 out.push(t);    // mates FIRST, source term LAST
@@ -1007,10 +1039,18 @@ export class MultiFieldBM25 {
             const nativeQ = r.queryTerms.length || 1;
             scores[idx] = r.score / nativeQ;
             if (m2s) {
-                // Synonym mates map back to their source term so a matched mate
-                // fills its source's coverage slot, not a fresh one (review fix #1).
+                // Synonym mates map back to their source term(s) so a matched
+                // mate fills its source's coverage slot, not a fresh one
+                // (review fix #1). A phrase mate credits EVERY phrase token —
+                // matching "QU" IS matching "query understanding" — and the
+                // Math.min clamp absorbs any over-credit from sources outside
+                // the indexed denominator.
                 const srcs = new Set<string>();
-                for (const qt of r.queryTerms) srcs.add(m2s.get(qt) ?? qt);
+                for (const qt of r.queryTerms) {
+                    const s = m2s.get(qt);
+                    if (s) { for (const x of s) srcs.add(x); }
+                    else srcs.add(qt);
+                }
                 coverage[idx] = totalTerms > 1 ? Math.min(1, srcs.size / totalTerms) : 1;
             } else {
                 const matched = new Set(r.queryTerms).size;

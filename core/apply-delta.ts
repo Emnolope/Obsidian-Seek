@@ -21,6 +21,8 @@ export interface ApplyCtx {
     // Re-stamps the patched BM25 cache to the new generation so the next search hits it.
     stamp(chunkCount: number): void;
     setSynonyms(map: SynonymMap): void;
+    // v2 T2 link dictionary: host re-mines these note paths' piped links (metadataCache is Obsidian-side, so core only names the paths).
+    patchLinkPairs(paths: ReadonlySet<string>): void;
     // Records why the incremental path declined; returns false so callers can `return ctx.fallback(...)`.
     fallback(reason: string, detail?: Record<string, unknown>): false;
     logError(tag: string, e: unknown): Promise<void>;
@@ -102,11 +104,18 @@ export async function applyDelta(
     // alias deletion/edit drops the old alias-bearing row) and adds, so an
     // alias EDIT — remove-old + add-new — trips it from either side.
     let aliasDictDirty = false;
+    // v2 T2 link dictionary: which NOTE PATHS this delta touched. Unlike
+    // the alias gate there is no cheap "could this edit change the pairs?"
+    // probe — piped links live in body text, invisible to chunk metadata —
+    // so ANY touched note re-mines its pairs at the commit below
+    // (per-path from metadataCache: O(touched), never O(vault)).
+    const touchedPaths = new Set<string>();
     try {
         const removeRows: number[] = [];
         for (const r of removals) {
             removeRows.push(r.row);
             if (chunkDeclaresAlias(r.meta)) aliasDictDirty = true;
+            if (r.meta.note_path) touchedPaths.add(r.meta.note_path);
             // Exact synchronous removal: postings cleaned NOW from the doc as
             // indexed (content-addressed body + as-committed frame meta) — no
             // discard tombstones, no vacuum debt, no first-search df drift. A
@@ -122,6 +131,9 @@ export async function applyDelta(
         // The SAME list feeds bm.add and appendFrameRows → row spaces stay aligned.
         fresh = freshDeltaAdds(adds, id => bm.rowOf(id) !== undefined);
         if (!aliasDictDirty) aliasDictDirty = fresh.some(a => chunkDeclaresAlias(a.chunk));
+        for (const a of fresh) {
+            if (a.chunk.note_path) touchedPaths.add(a.chunk.note_path);
+        }
         for (const a of fresh) bm.add(a.chunk, a.chunk.content ?? '');
         appendFrameRows(frame, fresh);
         // Meta-patches (chunk-diff, issue #5): id-stable chunks whose
@@ -177,6 +189,15 @@ export async function applyDelta(
             : frame.orderedChunks.filter((_, i) => frame.validRows[i]);
         ctx.setSynonyms(buildSynonymMap(liveChunks, t => bm.termDocFraction(t)));
     }
+    // v2 T2 link-pair patch: re-mine EXACTLY the touched paths from
+    // metadataCache and swap them into the per-path cache — a deleted /
+    // now-excluded / link-free note yields no entry and drops its stale
+    // pairs (a stale pair is a wrong mate; no v1-style staleness budget).
+    // phraseCache itself was nulled by stampBm25Cache above, so the next
+    // search's ensureBm25 rebuilds it from this patched aggregate against
+    // the patched index's df. Cold linkPairCache means no dictionary has
+    // been mined yet — nothing to patch, ensureBm25 will full-mine.
+    if (touchedPaths.size > 0) ctx.patchLinkPairs(touchedPaths);
     // persistBm25 is no longer skipped here (2026-06-20): the caller re-persists
     // this patched index after the mutex via maybePersistResidentBm25 (throttled,
     // embed-free). The old skip assumed a cold stamp would reject the drifted

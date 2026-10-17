@@ -21,7 +21,8 @@
 //                                     when `key` is a Number-typed property (ctx);
 //                                     value-inclusive. Operator on a non-Number key
 //                                     -> numericTypeMismatch (unsatisfiable, D3).
-//   after:DATE / before:DATE       -> dateAfter / dateBefore (day-inclusive), keyed
+//   after:DATE / before:DATE       -> dateAfter / dateBefore (EXCLUSIVE of the typed
+//                                     period: before:2026-10 = through Sep), keyed
 //                                     off the Recency date field; recognized only
 //                                     when Recency is ON (ctx.dateField present).
 //   -term                          -> exclude (note-level negation, Obsidian `-`)
@@ -127,40 +128,44 @@ export function parseNum(raw: string | null | undefined): number | null {
     return Number.isFinite(n) ? n : null;
 }
 
-const ONE_DAY_MS = 86_400_000;
-
-// Inclusive upper bound for `before:D`: the first instant AFTER the whole period
-// D names, so everything up to and including that period is kept. Granularity
-// follows what the user typed — a bare year covers the year, YYYY-MM the month,
-// YYYY-MM-DD the day. LOCAL-anchored (via the Date constructor's local
-// year/month/day fields, which also normalizes overflow — e.g. day 32 or
-// month 12 rolls into the next period for free) to match parseDateMs's
-// local-midnight treatment of bare dates, so both sides of the comparison
-// live in one frame — a UTC anchor here would roll boundary-day evening
-// events out of range for anyone west of UTC. Returns null when D doesn't
-// parse.
-function endBoundMs(d: string): number | null {
+// The period a typed date D names, as [start, end): start is its first instant,
+// end the first instant AFTER it. Both date filters are EXCLUSIVE of that
+// period (1.2): `before:D` keeps dt < start, `after:D` keeps dt >= end, so
+// `before:2026-10` means "through September" and `after:2026-10` "from
+// November". (≤1.1.3 was period-inclusive on both sides, which read wrong:
+// `before:2026-10` matched an Oct 5 note.) Granularity follows what the user
+// typed — a bare year is the year, YYYY-MM the month, YYYY-MM-DD (or any
+// string with that prefix) the day. LOCAL-anchored (via the Date
+// constructor's local year/month/day fields, which also normalizes overflow —
+// e.g. day 32 or month 12 rolls into the next period for free) to match
+// parseDateMs's local-midnight treatment of bare dates, so both sides of the
+// comparison live in one frame — a UTC anchor here would roll boundary-day
+// evening events out of range for anyone west of UTC. Any other parseable
+// datetime is a zero-width period at its instant. Null when D doesn't parse.
+export function periodBoundsMs(d: string): { start: number; end: number } | null {
     const cleaned = String(d).trim().replace(/^["'{]+|["'}]+$/g, '').trim();
     let m = /^(\d{4})$/.exec(cleaned);
-    if (m) return new Date(+m[1] + 1, 0, 1).getTime();
+    if (m) return { start: new Date(+m[1], 0, 1).getTime(), end: new Date(+m[1] + 1, 0, 1).getTime() };
     m = /^(\d{4})-(\d{2})$/.exec(cleaned);
-    if (m) return new Date(+m[1], +m[2], 1).getTime();
+    if (m) {
+        const mo = +m[2];
+        if (mo < 1 || mo > 12) return null;
+        return { start: new Date(+m[1], mo - 1, 1).getTime(), end: new Date(+m[1], mo, 1).getTime() };
+    }
     m = /^(\d{4})-(\d{2})-(\d{2})/.exec(cleaned);
     if (m) {
         // Validate the SYNTACTIC range (month 1-12, day 1-31) before handing
         // off to the numeric-args Date constructor, which normalizes rather
         // than rejects out-of-range fields (month 13 silently rolls into next
-        // January) — unlike the old Date.parse-based code this replaced. The
-        // `+1` below is the deliberate exclusive-bound arithmetic (day 31 + 1
-        // = 32, which legitimately rolls into next month "for free" per the
-        // doc comment above) and stays untouched — only the raw typed-in
-        // month/day get validated.
+        // January). The `+1` for `end` is the deliberate period arithmetic
+        // (day 31 + 1 = 32 legitimately rolls into next month) and stays
+        // untouched — only the raw typed-in month/day get validated.
         const mo = +m[2], day = +m[3];
         if (mo < 1 || mo > 12 || day < 1 || day > 31) return null;
-        return new Date(+m[1], mo - 1, day + 1).getTime();
+        return { start: new Date(+m[1], mo - 1, day).getTime(), end: new Date(+m[1], mo - 1, day + 1).getTime() };
     }
-    const base = parseDateMs(cleaned); // a parseable datetime → +1 day from its instant
-    return base === null ? null : base + ONE_DAY_MS;
+    const base = parseDateMs(cleaned);
+    return base === null ? null : { start: base, end: base };
 }
 
 // The date a date-FILTER reads for a chunk: the user's selected Recency field,
@@ -325,14 +330,14 @@ export function parseQuery(raw: string, ctx?: FilterContext): { cleanedQuery: st
         if (dafter !== undefined) {
             if (!dateEnabled) return args[0] as string;
             const v = stripQuotes(dafter).trim();
-            if (parseDateMs(v) === null) return args[0] as string;
+            if (periodBoundsMs(v) === null) return args[0] as string;
             dateAfter = v;
             return ' ';
         }
         if (dbefore !== undefined) {
             if (!dateEnabled) return args[0] as string;
             const v = stripQuotes(dbefore).trim();
-            if (endBoundMs(v) === null) return args[0] as string;
+            if (periodBoundsMs(v) === null) return args[0] as string;
             dateBefore = v;
             return ' ';
         }
@@ -439,12 +444,11 @@ export function compileMatcher(f: QueryFilters, ctx?: FilterContext): (chunk: Ch
         return { key: k, expected: normalizePropValue(exact ? raw.slice(1, -1) : raw), exact };
     });
     const numericClauses = f.numeric ?? [];
-    // Date bounds: `after:D` lower bound = start-of-period(D) (parseDateMs already
-    // floors a bare year/month/day to its start); `before:D` upper bound is the
-    // first instant AFTER D's whole period, so it's exclusive at the top → both
-    // bounds day-INCLUSIVE. The date field is the user's Recency selection.
-    const afterMs = f.dateAfter ? parseDateMs(f.dateAfter) : null;
-    const beforeBoundMs = f.dateBefore ? endBoundMs(f.dateBefore) : null;
+    // Date bounds, both EXCLUSIVE of the typed period (see periodBoundsMs):
+    // `after:D` keeps dt >= end-of-period(D), `before:D` keeps dt < start-of-
+    // period(D). The date field is the user's Recency selection.
+    const afterMs = f.dateAfter ? periodBoundsMs(f.dateAfter)?.end ?? null : null;
+    const beforeBoundMs = f.dateBefore ? periodBoundsMs(f.dateBefore)?.start ?? null : null;
     const dateField = ctx?.dateField ?? DEFAULT_DATE_FIELD;
 
     const tagMatches = (chunkTags: string[], ft: string): boolean =>
@@ -499,7 +503,7 @@ export function compileMatcher(f: QueryFilters, ctx?: FilterContext): (chunk: Ch
             if (!hit) return false;
         }
 
-        // Date filtering (day-inclusive). Missing/unparseable date → reject.
+        // Date filtering (period-exclusive). Missing/unparseable date → reject.
         if (afterMs !== null || beforeBoundMs !== null) {
             const dt = filterDate(meta, dateField);
             if (dt === null) return false;

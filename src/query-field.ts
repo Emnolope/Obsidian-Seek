@@ -21,8 +21,7 @@
 
 import { Platform, setIcon } from 'obsidian';
 import type { SuggestEngine } from './suggest';
-import { parseDateMs } from './fusion';
-import { parseNum } from './query-parser';
+import { parseNum, periodBoundsMs } from './query-parser';
 
 export type PillOp = 'tag' | 'path' | 'after' | 'before' | 'prop';
 
@@ -46,8 +45,8 @@ export interface PillToken {
 const OPS: Array<{ key: PillOp; hint: string }> = [
     { key: 'tag', hint: 'filter by #tag' },
     { key: 'path', hint: 'filter by folder' },
-    { key: 'after', hint: 'on/after a date' },
-    { key: 'before', hint: 'on/before a date' },
+    { key: 'after', hint: 'after a date' },
+    { key: 'before', hint: 'before a date' },
 ];
 const TOK_RE = /^(tag|path|after|before):(.*)$/i;
 
@@ -89,17 +88,26 @@ interface SuggestState {
     hintRow?: string;
 }
 
-// Date presets offered for after:/before:. Values are date strings Date.parse
-// (parseDateMs) accepts — bare year, year-month — so the serialized
-// `[created:>YYYY-MM]` binds. Built off the real clock (plugin runtime; not a
-// workflow script, so `new Date()` is allowed).
-function datePresets(): Array<{ value: string; label: string }> {
+// Date presets offered for after:/before:. Values are date strings
+// periodBoundsMs accepts (bare year, year-month). Both filters EXCLUDE the
+// typed period (1.2), so the useful presets differ per side: `before:` offers
+// this month/year ("everything before now-ish"), `after:` offers the PREVIOUS
+// month/year ("everything since"). `after:<this month>` would only match the
+// future, so it is not offered. Built off the real clock (plugin runtime; not
+// a workflow script, so `new Date()` is allowed).
+function datePresets(op: 'after' | 'before'): Array<{ value: string; label: string }> {
     const now = new Date();
     const y = now.getFullYear();
-    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const ym = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    if (op === 'before') {
+        return [
+            { value: ym(now), label: 'this month' },
+            { value: `${y}`, label: 'this year' },
+            { value: `${y - 1}`, label: 'last year' },
+        ];
+    }
     return [
-        { value: `${y}-${mm}`, label: 'this month' },
-        { value: `${y}`, label: 'this year' },
+        { value: ym(new Date(y, now.getMonth() - 1, 1)), label: 'last month' },
         { value: `${y - 1}`, label: 'last year' },
         { value: `${y - 2}`, label: String(y - 2) },
     ];
@@ -400,8 +408,8 @@ export class PillQueryField {
     // Resolve the dropdown hint for an operator. tag:/path: use their static
     // hint as-is; after:/before: get the configured Recency date-field name
     // prefixed onto the suffix in OPS, so the hint names the field the filter
-    // actually compares (e.g. "modified on/before a date" or "<myDateProp>
-    // on/after a date") rather than a hardcoded `created`.
+    // actually compares (e.g. "modified before a date" or "<myDateProp>
+    // after a date") rather than a hardcoded `created`.
     private opHint(o: { key: PillOp; hint: string }): string {
         return o.key === 'after' || o.key === 'before' ? `${this.dateFieldLabel} ${o.hint}` : o.hint;
     }
@@ -520,7 +528,7 @@ export class PillQueryField {
             }
 
             // after: / before: — date presets + a free-entry hint.
-            const presets = datePresets().filter(p => p.value.startsWith(val));
+            const presets = datePresets(op === 'after' ? 'after' : 'before').filter(p => p.value.startsWith(val));
             const items: MenuItem[] = presets.map(p => ({
                 type: 'value', op, value: p.value, label: p.value, hint: p.label,
             }));
@@ -616,8 +624,8 @@ export class PillQueryField {
     }
 
     // Gate on a value before it may become a pill. after:/before: values must
-    // parse as a date (parseDateMs — the same parser the compiled [created:…]
-    // clause runs through downstream): an unparseable value would commit a
+    // parse as a date (periodBoundsMs — the same parser the date matcher runs
+    // through downstream): an unparseable value would commit a
     // confident-looking pill whose serialized clause the matcher silently
     // DROPS — an active-looking filter that filters nothing. Declining the
     // commit leaves the text in the editable instead. tag:/path: stay
@@ -625,7 +633,7 @@ export class PillQueryField {
     private canCommit(op: PillOp, value: string): boolean {
         // With Recency OFF a date pill would serialize to a token the parser
         // ignores — an active-looking filter that filters nothing. Decline it.
-        if (op === 'after' || op === 'before') return this.dateFiltersEnabled && parseDateMs(value) !== null;
+        if (op === 'after' || op === 'before') return this.dateFiltersEnabled && periodBoundsMs(value) !== null;
         return true;
     }
 

@@ -17,7 +17,7 @@
 import { App, PluginSettingTab, Setting, Notice, setIcon } from 'obsidian';
 import type SeekPlugin from './main';
 import type { IndexStats, ModelStatus } from './main';
-import type { AltOpenLocation, SidecarIndexLocation } from './types';
+import type { AltOpenLocation, Device, SidecarIndexLocation } from './types';
 import { DEFAULT_SETTINGS, MATCH_STRENGTH_MIN_NOTES } from './types';
 import {
     getBackendOverride, setBackendOverride, isWebgpuDemoted, clearWebgpuDemoted,
@@ -25,8 +25,29 @@ import {
 } from './platform';
 import { enumerateDatePropertyNames } from './prop-types';
 
+// Design B: how long a resume may sit in the pre-embed reconcile before the row
+// shows "Resuming…". Below this, the resume goes straight to "Indexing…" — the
+// reconcile is usually cheap (the paused remainder is record-less, classified dirty
+// without a file read), so this guard just avoids a "Resuming…" flash on the common
+// fast path while still explaining a genuinely slow reconcile on a large vault.
+const RESUME_LABEL_DELAY_MS = 3000;
+
+// Copy for the "Indexing on GPU / CPU" line under the reindex progress bar. A full
+// rebuild is the heaviest thing Seek does and the CPU path is roughly half the speed
+// of WebGPU, so a slow run should be attributable rather than looking like a hang.
+// `backend` is the device the model ACTUALLY loaded on (plugin.activeBackend), null
+// before the load lands — NOT resolveDevice(), which returns the REQUEST ('auto' =
+// try WebGPU, fall back), so an auto request that lost the WebGPU init reads 'wasm'
+// here and correctly says CPU. Deliberately just the two outcomes: WHY a device is
+// on CPU (override / post-crash demote / off the allowlist / failed init) belongs to
+// the compute control in Model & performance, not to a progress bar.
+function backendLine(backend: Device | null): string {
+    if (backend === null) return 'Loading the model…';
+    return backend === 'webgpu' ? 'Indexing on GPU (WebGPU)' : 'Indexing on CPU';
+}
+
 // Real repo/social URLs for the About footer.
-const GITHUB_URL = 'https://github.com/tooape/Obsidian-Seek-prototype';
+const GITHUB_URL = 'https://github.com/ryan-manor/Obsidian-Seek';
 const X_URL = 'https://x.com/tooape';
 const DOCS_URL = 'https://publish.obsidian.md/rmm/Seek+Documentation/About+Seek';
 
@@ -126,13 +147,27 @@ export class SeekSettingTab extends PluginSettingTab {
     private advancedOpen = false;
     // Independent of advancedOpen (Relevance) so the Index disclosure toggles on its own.
     private indexAdvancedOpen = false;
-    private reindexPhase: 'idle' | 'confirm' | 'running' = 'idle';
+    // Reindex state machine. 'paused'/'resuming' are the design-B additions:
+    //   running  → user hits Pause → the pass breaks and returns paused → 'paused'
+    //   paused   → user hits Resume → 'resuming' (drain the remainder via catch-up)
+    //   resuming → first embed progress arrives → back to 'running' → drains → 'idle'
+    private reindexPhase: 'idle' | 'confirm' | 'running' | 'paused' | 'resuming' = 'idle';
     private reindexDone = 0;
     private reindexTotal = 0;
     // Live-progress DOM refs, repointed on each display() so the runFullReindex
     // onProgress callback always paints the current node (robust to close/reopen).
     private progressFillEl: HTMLElement | null = null;
     private progressLabelEl: HTMLElement | null = null;
+    // Design B: the "Resuming…" label is deferred behind this timer so a fast resume
+    // (the reconcile is cheap when the remainder is record-less) goes straight to
+    // "Indexing…" without flashing "Resuming…". Fires only if no embed progress lands
+    // within RESUME_LABEL_DELAY_MS. Cleared the moment progress arrives (or on hide()).
+    private resumeLabelTimer: number | null = null;
+    private progressBackendEl: HTMLElement | null = null;   // "Indexing on GPU/CPU" line under the bar
+    private resumeBaseline = 0;         // files committed at pause — the resume count is added onto this
+    private resumeProgressed = false;   // first embed progress of the resume has arrived (→ label "Indexing…")
+    private resumeSlow = false;         // 3 s elapsed with no resume progress yet (→ label "Resuming…")
+    private pausing = false;            // Pause clicked; the pass is finishing its in-flight file (→ button "Pausing…")
     // Transient "downloading…" flag for the model section (no byte progress available).
     private modelDownloading = false;
     // Model-delete state: two-step confirm (Delete → Cancel / Delete model) so a
@@ -148,6 +183,11 @@ export class SeekSettingTab extends PluginSettingTab {
     display(): void {
         // Fetch the async snapshots once; re-render when they land.
         if (!this.stats && !this.loading) void this.loadData();
+
+        // Design B: adopt the plugin's paused latch if our machine is idle (e.g. the tab
+        // was reopened after a pause). A live run/resume already owns the phase — don't
+        // stomp it. reindexDone/Total are best-effort here; the "Paused" desc reads them.
+        if (this.reindexPhase === 'idle' && this.plugin.isIndexPaused) this.reindexPhase = 'paused';
 
         const { containerEl } = this;
         containerEl.empty();
@@ -194,6 +234,10 @@ export class SeekSettingTab extends PluginSettingTab {
         this.modelStatus = null;
         this.modelDeleteConfirm = false;
         this.resetConfirm = false;
+        // Kill the resume-label guard so it can't fire a rerender into a closed tab.
+        // The reindex/resume itself runs on in the plugin (fire-and-forget); reopening
+        // re-derives the phase from isIndexPaused above.
+        this.clearResumeTimer();
     }
 
     private async loadData(): Promise<void> {
@@ -216,7 +260,12 @@ export class SeekSettingTab extends PluginSettingTab {
 
     // ---- Index ---------------------------------------------------------------------
     private statusState(): 'none' | 'ok' | 'indexing' | 'error' {
-        if (this.plugin.isIndexing || this.reindexPhase === 'running') return 'indexing';
+        // 'paused'/'resuming' (design B) are still an in-progress index — keep the card
+        // amber, not green: coverage is incomplete until the remainder finishes.
+        // incrementalWork covers the third shape: a flush/catch-up drain, which is
+        // neither a full pass nor a user-driven reindex.
+        if (this.plugin.isIndexing || this.plugin.isIndexPaused || this.plugin.incrementalWork
+            || this.reindexPhase === 'running' || this.reindexPhase === 'paused' || this.reindexPhase === 'resuming') return 'indexing';
         if (this.plugin.indexHealthState === 'degraded') return 'error';
         if (this.plugin.indexHealthState === 'recovering') return 'indexing';
         if (this.stats && this.stats.files === 0) return 'none';
@@ -300,11 +349,24 @@ export class SeekSettingTab extends PluginSettingTab {
             indexing: { tone: 'accent', label: 'Indexing…' },
             error: { tone: 'bad', label: 'Index error' },
         };
-        const st = STATE[this.statusState()];
+        const state = this.statusState();
+        const st = STATE[state];
+        // Name the work when it's an incremental pass. A bare "Indexing…" reads the
+        // same whether Seek is catching up on 3 notes or rebuilding the whole vault,
+        // and issue #8 was filed by someone who watched the ambiguous version and
+        // reasonably assumed the worse one. A user-driven reindex keeps the plain
+        // label in every phase — it has its own progress row with counts
+        // (renderReindexRow) right below, and a resume drains through the same
+        // catch-up path, so this counter would otherwise narrate it twice.
+        const work = state === 'indexing' && this.reindexPhase === 'idle'
+            ? this.plugin.incrementalWork : null;
+        const label = work
+            ? `Indexing ${work.files.toLocaleString()} changed ${work.files === 1 ? 'note' : 'notes'}…`
+            : st.label;
 
         const health = card.createDiv({ cls: 'seek-status-health' });
         health.createSpan({ cls: `seek-dot seek-dot-${st.tone}` });
-        health.createSpan({ cls: 'seek-status-label', text: st.label });
+        health.createSpan({ cls: 'seek-status-label', text: label });
 
         card.createDiv({ cls: 'seek-status-sep' });
 
@@ -347,18 +409,50 @@ export class SeekSettingTab extends PluginSettingTab {
     }
 
     private renderReindexRow(containerEl: HTMLElement): void {
-        if (this.reindexPhase === 'running') {
+        if (this.reindexPhase === 'running' || this.reindexPhase === 'resuming') {
+            const resuming = this.reindexPhase === 'resuming';
+            // Label: a normal run says "Reindexing…". A resume says "Resuming…" ONLY
+            // while the pre-embed reconcile is slow (>3 s, resumeSlow) and no embed
+            // progress has landed yet — otherwise "Indexing…" (design B).
+            const label = resuming
+                ? (this.resumeSlow && !this.resumeProgressed ? 'Resuming…' : 'Indexing…')
+                : 'Reindexing…';
             const row = containerEl.createDiv({ cls: 'seek-progress-row' });
             const head = row.createDiv({ cls: 'seek-progress-head' });
-            head.createDiv({ cls: 'setting-item-name', text: 'Reindexing…' });
+            head.createDiv({ cls: 'setting-item-name', text: label });
             this.progressLabelEl = head.createDiv({ cls: 'seek-progress-count' });
             const bar = row.createDiv({ cls: 'seek-progress-track' });
             this.progressFillEl = bar.createDiv({ cls: 'seek-progress-fill' });
+            // Which backend the embed pass is actually on. Painted (not just built)
+            // because the model usually isn't loaded yet at first render — the reindex
+            // triggers the load — and the row only re-renders on phase changes.
+            this.progressBackendEl = row.createDiv({ cls: 'seek-progress-backend' });
             this.paintProgress();
+            // Pause is offered only on a live full run — a resume drain is already
+            // bounded + self-finishing, so it isn't re-pausable. Native Setting button
+            // → themed for free (no custom CSS). "Pausing…" bridges the gap between the
+            // click and the pass returning (it finishes its in-flight file first).
+            if (!resuming) {
+                new Setting(containerEl).addButton(b => {
+                    b.setButtonText(this.pausing ? 'Pausing…' : 'Pause');
+                    if (this.pausing) b.setDisabled(true);
+                    else b.onClick(() => this.pauseReindex());
+                });
+            }
             return;
         }
         this.progressFillEl = null;
         this.progressLabelEl = null;
+        this.progressBackendEl = null;
+
+        if (this.reindexPhase === 'paused') {
+            new Setting(containerEl)
+                .setName('Indexing paused')
+                .setDesc(`${this.reindexDone.toLocaleString()} of ${this.reindexTotal.toLocaleString()} notes indexed. The rest stay queued — resume to finish. Notes you add or change while paused are picked up automatically.`)
+                .addButton(b => b.setButtonText('Resume').setCta().onClick(() => this.resumeReindex()));
+            this.renderReindexNote(containerEl);
+            return;
+        }
 
         if (this.reindexPhase === 'confirm') {
             new Setting(containerEl)
@@ -406,6 +500,7 @@ export class SeekSettingTab extends PluginSettingTab {
         const bases = this.s.indexBases ? this.app.vault.getFiles().filter(f => f.extension === 'base').length : 0;
         this.reindexTotal = md + bases;
         this.reindexDone = 0;
+        this.pausing = false;
         this.reindexPhase = 'running';
         this.rerender();
 
@@ -417,15 +512,89 @@ export class SeekSettingTab extends PluginSettingTab {
                 this.paintProgress();
             },
         }).then(() => {
+            // Design B: the pass may have returned PAUSED rather than complete. Hold the
+            // "Paused" affordance (with the last-painted count) instead of dropping to
+            // idle, so the user can resume. isIndexPaused is the plugin's latch.
+            if (this.plugin.isIndexPaused) {
+                this.pausing = false;
+                this.reindexPhase = 'paused';
+                this.stats = null;
+                this.rerender();
+                void this.loadData();
+                return;
+            }
             // Back to idle with a refreshed status card — that IS the "done" feedback.
             this.reindexPhase = 'idle';
             this.stats = null;
             this.rerender();
             void this.loadData();
         }).catch(() => {
+            this.pausing = false;
             this.reindexPhase = 'idle';
             this.rerender();
         });
+    }
+
+    // Design B — Pause: flag the running pass to stop at its next file boundary. It
+    // finishes the file already in flight, commits, and resolves paused (startReindex's
+    // .then flips to 'paused'). "Pausing…" bridges that brief gap.
+    private pauseReindex(): void {
+        if (this.reindexPhase !== 'running' || this.pausing) return;
+        this.pausing = true;
+        this.plugin.pauseIndexing();
+        this.rerender();
+    }
+
+    // Design B — Resume: drain the remainder via the plugin's catch-up path. The label
+    // stays "Indexing…" on the fast path; only a reconcile that outlasts
+    // RESUME_LABEL_DELAY_MS surfaces "Resuming…" (resumeSlow). The live count continues
+    // from the paused baseline so the bar never jumps backwards.
+    private resumeReindex(): void {
+        if (this.reindexPhase !== 'paused') return;
+        this.resumeBaseline = this.reindexDone;
+        this.resumeProgressed = false;
+        this.resumeSlow = false;
+        this.reindexPhase = 'resuming';
+        this.rerender();
+        // 3 s guard: only escalate to "Resuming…" if no embed progress has landed yet.
+        this.clearResumeTimer();
+        this.resumeLabelTimer = window.setTimeout(() => {
+            this.resumeLabelTimer = null;
+            if (this.reindexPhase === 'resuming' && !this.resumeProgressed) {
+                this.resumeSlow = true;
+                this.rerender();
+            }
+        }, RESUME_LABEL_DELAY_MS);
+
+        void this.plugin.resumeIndexing((msg) => {
+            const m = msg.match(/Indexed\s+([\d,]+)\s+files/i);
+            if (!m) return;
+            if (!this.resumeProgressed) {
+                // First embedding progress → drop "Resuming…", cancel the guard, and
+                // re-render as "Indexing…". Subsequent messages only repaint the bar.
+                this.resumeProgressed = true;
+                this.resumeSlow = false;
+                this.clearResumeTimer();
+                this.rerender();
+            }
+            const burstN = parseInt(m[1].replace(/,/g, ''), 10);
+            this.reindexDone = Math.min(this.reindexTotal, this.resumeBaseline + burstN);
+            this.paintProgress();
+        }).then(() => {
+            this.clearResumeTimer();
+            this.reindexPhase = 'idle';
+            this.stats = null;
+            this.rerender();
+            void this.loadData();
+        }).catch(() => {
+            this.clearResumeTimer();
+            this.reindexPhase = 'idle';
+            this.rerender();
+        });
+    }
+
+    private clearResumeTimer(): void {
+        if (this.resumeLabelTimer !== null) { window.clearTimeout(this.resumeLabelTimer); this.resumeLabelTimer = null; }
     }
 
     private paintProgress(): void {
@@ -436,6 +605,7 @@ export class SeekSettingTab extends PluginSettingTab {
         if (this.progressLabelEl) {
             this.progressLabelEl.setText(`${this.reindexDone.toLocaleString()} / ${this.reindexTotal.toLocaleString()} notes · ${pct}%`);
         }
+        if (this.progressBackendEl) this.progressBackendEl.setText(backendLine(this.plugin.activeBackend));
     }
 
     // ---- Relevance -----------------------------------------------------------------

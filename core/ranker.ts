@@ -6,7 +6,8 @@
 //                   per-query max when the bound is 0 — see fusion.ts)
 //   3. hybrid     = alpha * dense_norm + (1 - alpha) * bm25_norm
 //   4. recency    = 0.5^(days_old / halfLife)   // age via the vault's recencyKey
-//   5. final      = hybrid + eps * recency + title_boost   // ε-TIEBREAKER, not a blend
+//   5. final      = hybrid + eps * recency + title_boost
+//                   // ε-TIEBREAKER, not a blend
 //
 // FUSION HISTORY: through 2026-06-09 the linear blend min-max-normalized each
 // channel per query, which manufactured a false 1.00 dense winner on OOV/no-
@@ -17,7 +18,7 @@
 // normalization (fusion.ts) fixes it constant-free while improving aggregate
 // nDCG. The gate is deleted; see [[seek-empty-stub-dense-pollution]].
 
-import type { ChunkMeta, ScoredChunk, RecencyKeyChoice } from './types.ts';
+import { DEFAULT_SETTINGS, type ChunkMeta, type ScoredChunk, type RecencyKeyChoice } from './types.ts';
 import { theoreticalNormDense, theoreticalNormBm25, hybridFusion, computeRecencyScore, recencyDate, titleMatchBoost } from './fusion.ts';
 
 // (BlendMode deleted 2026-06-11: the opt-in 'rrf' mode is gone — linear TM2C2
@@ -33,54 +34,22 @@ export interface RankingConfig {
     titleBoost: number;
 }
 
+// ONE source of truth: the ranking defaults ARE the plugin's shipped settings
+// (types.ts DEFAULT_SETTINGS — the field comments there carry each value's
+// eval history). Until 2026-09-02 this object re-declared its own copy
+// (titleBoost 0.8 / ε 0.02·180d / recencyKey 'created') that had drifted from
+// what shipped (0.5 / 0·180d / 'modified'; 'created' is the default since
+// 2026-09-02), so the harness default, the unit
+// tests and the CLI help were all validating a config no install ran. Derive,
+// never re-declare. The live values still come from SeekSettings per search
+// (search.ts); this backs the eval harness and any caller that omits config.
 export const DEFAULT_RANKING_CONFIG: RankingConfig = {
-    // alpha = dense weight, on the BOUND-NORMALIZED scale (2026-06-09 fusion
-    // completion: BM25 is divided by its per-query theoretical bound, not its
-    // empirical max — fusion.ts theoreticalNormBm25). NOT comparable to either
-    // earlier scale (min-max ~0.5–0.7, empirical-max TM2C2 0.90–0.95): the bound
-    // compresses the lexical channel, so the optimum sits LOWER. 0.70–0.85 is a
-    // flat plateau on BOTH the 482-q personal eval (0.8756 @ 0.70) AND the D&D
-    // OOV slice (0.9364 @ 0.80) — the first scale on which one global alpha is
-    // optimal across domains, which is the point of the bound (query-invariant
-    // channel scale). 0.80 is the shipped joint point. The empirical-max-era
-    // "saturated single-term BM25 hit" captures are handled by the norm itself
-    // now (a weak best match no longer gets a forced 1.0), not by the weight.
-    // The live value comes from SeekSettings.denseWeight (search.ts); this
-    // default backs the eval harness + any caller that omits config.
-    // 0.80 → 0.85 (2026-06-27 re-eval): de-franken BM25 is more assertive, so the
-    // joint optimum moved up; mirrors DEFAULT_SETTINGS.denseWeight (types.ts rev 8).
-    alpha: 0.85,
-    // ε-TIEBREAKER (2026-06-11, [[Seek Rel]] §Recency Plan 2026-06-11) — the
-    // additive nudge in final = hybrid + ε·recency + titleBoost. Deliberately
-    // sized BELOW any meaningful score gap so it can only break genuine
-    // near-ties (dated-series siblings with identical coverage boost and
-    // near-identical dense vectors), where newest-first is a sane prior over
-    // arbitrary frame order. It must NEVER become a lean: the 06-04 click study
-    // showed 50% of episodic clicks target an instance >90d old, so any recency
-    // term strong enough to reorder real score gaps loses (forced newest-first
-    // within a series scored WORSE than flat relevance, MRR 0.242 vs 0.310).
-    // That study is also why this replaced the old (1−rw)·hybrid + rw·recency
-    // blend, whose history was 0.25 → 0.10 → parked at 0 (2026-06-08..11).
-    // Ship-and-observe value, not eval-swept: the frozen eval sets are
-    // single-gold known-item and therefore recency-inert by construction.
-    recencyEpsilon: 0.02,
-    // Smooth half-life replacing the two-stage 30d-cutoff decay, which zeroed
-    // the MEDIAN episodic click target (83d old). 180d = the 06-04 operating point.
-    recencyHalfLifeDays: 180,
-    // Which date "recent" means — vault-global, settings-driven (SeekSettings.
-    // recencyKey via search.ts). See fusion.ts recencyDate for the semantics
-    // and why 'created' is the default.
-    recencyKey: 'created',
-    // Which frontmatter property holds the creation date — `created` is THIS
-    // vault's convention, not an Obsidian builtin, so it's settings-driven
-    // (SeekSettings.createdProp) for portability. Resolved read-side from the
-    // indexed properties map; see the fusion.ts recencyDate ladder.
-    createdProp: 'created',
-    // Coverage-based known-item boost (fusion.ts titleMatchBoost): boost *
-    // precision when all query tokens are in the title. 0.8 = the swept knee on
-    // the 482-q old-log eval (nDCG@10 0.8143→0.8677). Was 0.025 under the old
-    // exact-equality semantics — NOT comparable; do not "revert" to 0.025.
-    titleBoost: 0.8,
+    alpha: DEFAULT_SETTINGS.denseWeight,
+    recencyEpsilon: DEFAULT_SETTINGS.recencyEpsilon,
+    recencyHalfLifeDays: DEFAULT_SETTINGS.recencyHalfLifeDays,
+    recencyKey: DEFAULT_SETTINGS.recencyKey,
+    createdProp: DEFAULT_SETTINGS.createdProp,
+    titleBoost: DEFAULT_SETTINGS.navTitleBoost,
 };
 
 export interface RankBreakdown {
