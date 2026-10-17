@@ -48,6 +48,7 @@ import { planFileDiff, captureRemovalBodies } from '../core/file-diff';
 import { embedAndCommit, type EmbedCommitCtx, type SidecarFlushJob } from '../core/embed-commit';
 import { applyDelta as applyDeltaCore } from '../core/apply-delta';
 import { shouldIndexPath as shouldIndexPathCore, chunksFor as chunksForCore, computeDelta, UnreadableQuarantine } from '../core/delta';
+import { ResidentIndex, type ResidentPorts } from '../core/resident-index';
 import { runSearch, type SearchHost, type SearchOverride, type ExperimentOverride } from '../core/engine';
 import { alignCandidate, buildResidentRerankBlock, chunkMetaEqual, pushDeltaAdds, freshDeltaAdds, appendFrameRows, tombstoneFrameRows, buildSelectionMask, COMPACTION_TOMBSTONE_FRACTION, COHERENCE_SAMPLES, COHERENCE_DRIFT_COOLDOWN_MS, coherenceDriftDecision, shouldDiscardPartialFrame, driftRecoveryDecision, frameBm25Coherent, buildBm25Stamp, bm25StampMatches, dedupByPath, topKByScore, snippetPlainText, makeSnippet, type ResidentFrame, type DeltaAdd, type DriftRecoveryState, type RowSpaceProbe, type Bm25PersistStamp } from '../core/search-helpers';
 export { alignCandidate, buildResidentRerankBlock, chunkMetaEqual, pushDeltaAdds, freshDeltaAdds, appendFrameRows, tombstoneFrameRows, buildSelectionMask, COMPACTION_TOMBSTONE_FRACTION, COHERENCE_SAMPLES, COHERENCE_DRIFT_COOLDOWN_MS, coherenceDriftDecision, shouldDiscardPartialFrame, driftRecoveryDecision, frameBm25Coherent, buildBm25Stamp, bm25StampMatches } from '../core/search-helpers';
@@ -195,6 +196,7 @@ export class SearchOrchestrator {
         this.taskCtx = taskCtx;
         this.coord = new IndexCoordinator(indexDir, settings);
         this.binaryWorker = new BinaryScorerWorker();
+        this.res = new ResidentIndex(this.residentPorts());
     }
 
     // Release the off-thread scorer's Worker. Called from the plugin's onunload
@@ -204,12 +206,7 @@ export class SearchOrchestrator {
     dispose(): void {
         this.disposed = true;
         this.binaryWorker.dispose();
-        // A pending idle-deferred persist would otherwise run its 200-630 ms
-        // toJSON against this zombie orchestrator after unload (issue #5 fix E).
-        if (this.pendingPersistIdle !== null && typeof cancelIdleCallback === 'function') {
-            cancelIdleCallback(this.pendingPersistIdle);
-            this.pendingPersistIdle = null;
-        }
+        this.res.dispose();
     }
 
     // The cache-generation counter (bumped on every index mutation; see
@@ -1048,7 +1045,7 @@ export class SearchOrchestrator {
             bm25Headings: this.bm25CacheHeadings,
             generation: () => this.coord.generation,
             bumpGeneration: () => this.coord.bumpGeneration(),
-            stamp: n => this.stampBm25Cache(n),
+            stamp: n => this.res.stampBm25(n),
             setSynonyms: m => { this.synonymCache = m; },
             // fork 1.2.1 src/search.ts:2379 SearchOrchestrator.applyDelta (link-pair patch; the mining is host-side, so it lives here not in core)
             patchLinkPairs: touchedPaths => {
@@ -2037,642 +2034,85 @@ export class SearchOrchestrator {
         };
     }
 
-    // Stage-1 resident binary index. Loaded from IDB once per dataGeneration
-    // then cached in memory; ~64 KB per 1k chunks at d=512, so 5.5k vault ≈
-    // 350 KB resident. The packed buffer is one contiguous Uint8Array for
-    // cache-friendly scoring (see binary.ts:concatPacked).
-    private binaryIndex: {
-        ids: string[];
-        packed: Uint8Array;
-        bytesPerVec: number;
-        generation: number;
-    } | null = null;
-
-    // Ensure the resident binary index is loaded and matches dataGeneration.
-    // Returns true if served from cache, false if we had to read IDB.
-    // Called at the top of every search; idempotent.
-    private async ensureBinaryIndex(expectedChunkCount: number): Promise<boolean> {
-        if (
-            this.binaryIndex &&
-            this.binaryIndex.generation === this.coord.generation
-        ) {
-            return true;
-        }
-        const { ids, packed } = await this.store.listAllBinary();
-        if (ids.length === 0) {
-            // No binary index yet — backfill hasn't run, or vault is empty.
-            // Caller treats null as "no candidates available" and returns
-            // an empty result set with the appropriate log entry.
-            this.binaryIndex = null;
-            return false;
-        }
-        const bytesPerVec = packed[0].length;
-        const concat = concatPacked(packed, bytesPerVec);
-        this.binaryIndex = {
-            ids,
-            packed: concat,
-            bytesPerVec,
-            generation: this.coord.generation,
+    // Cache layer lives in core/resident-index.ts; these proxies keep orchestrator callers and tests unchanged.
+    private res!: ResidentIndex;
+    private residentPorts(): ResidentPorts {
+        const o = this;
+        return {
+            store: o.store,
+            coord: o.coord,
+            get settings() { return o.settings; },
+            get mobile() { return isMobilePlatform(); },
+            int8Resident: residentInt8Enabled,
+            yield: cheapYield,
+            embedderLoaded: () => o.embedder.loaded,
+            disposed: () => o.disposed,
+            peerOn: () => o.coord.sidecarOn() && gzipAvailable() && !!o.coord.dir,
+            peerBm25: async accept => {
+                if (!o.coord.sidecarOn() || !gzipAvailable()) return null;
+                const dir = o.coord.dir;
+                if (!dir) return null;
+                const adapter = o.app.vault.adapter;
+                const devs = await rankAcceptedProducers(adapter, dir, expectationFor());
+                // Freshest first; a producer without a loadable .gz (mobile writes none) just falls through to the next.
+                for (const dev of devs) {
+                    try {
+                        const bytes = await adapter.readBinary(bm25PathFor(dir, dev)).catch(() => null);
+                        if (!bytes) continue;
+                        const rec = JSON.parse(await gunzipToString(bytes)) as { json?: unknown; stamp?: unknown };
+                        if (typeof rec.json !== 'string' || !accept(rec)) continue;
+                        return { json: rec.json };
+                    } catch (e) {
+                        console.warn(`[seek] cross-device BM25 load from ${dev} failed, trying next`, e);
+                    }
+                }
+                return null;
+            },
+            get publishBm25() {
+                const dir = o.coord.dir;
+                if (!o.coord.sidecarOn() || isMobilePlatform() || !gzipAvailable() || !dir) return null;
+                return async (payload: string) => {
+                    const gz = await gzipString(payload);
+                    // writeBinary doesn't create parents; the first emit can precede any shard write.
+                    await ensureDir(o.app.vault.adapter, dir);
+                    await writeBytesAtomic(o.app.vault.adapter, bm25PathFor(dir, o.logger.deviceId), gz);
+                };
+            },
+            mineLinkPairs: () => mineLinkPairsByPath(o.app, p => shouldIndexPath(o.app, o.settings, p)),
+            get span() { return o.taskCtx ?? undefined; },
+            beat: (t, d) => o.forensics?.beat(t, d as Parameters<NonNullable<typeof o.forensics>["beat"]>[1]),
+            get idle() {
+                // Hidden windows have no frames to jank, and rIC would only fire there via its timeout.
+                if (typeof activeDocument === 'undefined' || activeDocument.hidden || typeof requestIdleCallback !== 'function') return null;
+                return (fn: () => void) => { const id = requestIdleCallback(() => fn(), { timeout: 5000 }); return () => cancelIdleCallback(id); };
+            },
+            logError: (c, e) => o.logger.appendError(c, e),
+            now: () => performance.now(),
         };
-        // Cross-check vs the chunks store — a large divergence here is the
-        // canary for a half-backfilled or partially-corrupted index.
-        if (Math.abs(ids.length - expectedChunkCount) > expectedChunkCount * 0.05) {
-            console.warn(
-                `[seek] binary index has ${ids.length} rows vs ${expectedChunkCount} chunks ` +
-                `(>5% divergence) — consider Full reindex`,
-            );
-        }
-        return false;
     }
 
-    // Resident unified frame: the corpus in binary-index order (orphans
-    // dropped) plus its aligned packed-binary buffer. Cached per dataGeneration
-    // exactly like binaryIndex/bm25Cache. The frame is query-INDEPENDENT —
-    // inline filters apply as a selection mask downstream (search() line ~459),
-    // never by reshaping the frame — so it stays valid across queries until a
-    // reindex bumps dataGeneration. Caching it removes the per-keystroke
-    // listAllChunks() full-corpus read, which the 2026-06-03 timing breakdown
-    // measured as ~55% of warm-search latency (idbReadMs 42 of 76 ms). The
-    // chunk text/metadata held here (~1 MB/1k chunks) is needed resident anyway
-    // for the filter matcher, the recency arm, and result rendering — none of
-    // which can run off ids alone.
-    // See the ResidentFrame interface for the row-space contract. residentInt8 is
-    // null when the embeddings store is empty/inconsistent or gated off (mobile/
-    // over-budget) — stage-2 then falls back to the per-id IDB read. validRows /
-    // tombstoneCount track incremental liveness (Seek scaling A1).
-    private frameCache: ResidentFrame | null = null;
+    private get frameCache() { return this.res.frame; }
+    private set frameCache(v) { this.res.frame = v; }
+    private get bm25Cache() { return this.res.bm25; }
+    private set bm25Cache(v) { this.res.bm25 = v; }
+    private get bm25CacheGeneration() { return this.res.bm25Gen; }
+    private get bm25CacheProps() { return this.res.bm25Props; }
+    private get bm25CacheHeadings() { return this.res.bm25Headings; }
+    private get synonymCache() { return this.res.synonyms; }
+    private set synonymCache(v) { this.res.synonyms = v; }
+    private get linkPairCache() { return this.res.linkPairs; }
+    private set bgStatsGen(v: number) { this.res.bgGen = v; }
 
-    // Corpus dense-cosine background (dense-stats.ts), cached by dataGeneration
-    // exactly like the frame: read from persisted meta on the first query after a
-    // reindex, then reused with zero IDB traffic until the next bump. Drives the
-    // DISPLAY-only confidence; null on a pre-stats index (full reindex needed) or
-    // a sub-MIN_BG_SAMPLE corpus → confidence simply isn't shown.
-    private bgStatsCache: { mean: number; std: number } | null = null;
-    private bgStatsGen = -1;
-
-    private async getDenseBgStats(): Promise<{ mean: number; std: number } | null> {
-        if (this.bgStatsGen === this.coord.generation) return this.bgStatsCache;
-        const m = await this.store.getMeta();
-        this.bgStatsCache = (m.bgMean != null && m.bgStd != null && m.bgStd > 0)
-            ? { mean: m.bgMean, std: m.bgStd }
-            : null;
-        this.bgStatsGen = this.coord.generation;
-        return this.bgStatsCache;
-    }
-
-    // Ensure the resident frame is built and matches dataGeneration. Returns
-    // the frame, or null if there's no usable index (empty vault / no binary
-    // backfill yet). On a cache miss this is the one place that reads the full
-    // chunk store (listAllChunks) and assembles the binary-aligned frame; on a
-    // hit it returns immediately with zero IDB traffic.
-    private async ensureFrame(): Promise<ResidentFrame | null> {
-        // Wait out any in-flight delta so we read the fully-applied result, not a
-        // half-committed one (a multi-file delta isn't one atomic transaction).
-        // Loop, not check-once: a fresh delta can start before we wake, and we
-        // want to read with none in flight. The delta bumps dataGeneration on
-        // completion, so the cache check below then misses and rebuilds. No-op
-        // during a full reindex (currentDelta is null there) — its progressive
-        // "queryable as it fills" read is intended.
-        while (this.coord.currentDelta) { try { await this.coord.currentDelta; } catch { /* delta logged it */ } }
-        if (this.frameCache && this.frameCache.generation === this.coord.generation) {
-            return this.frameCache;
-        }
-        // Capture the generation we're building against. A full reindex's
-        // progressive read has NO currentDelta gate (the while loop above only
-        // waits out incremental deltas), so it can COMPLETE — bumping the
-        // generation and nulling frameCache — during the awaits below. Without
-        // a re-check before the write, this frame (assembled off a PARTIALLY
-        // filled store) would be stamped with the NEW generation, and the next
-        // search's generation check would accept that partial frame as fresh (F2).
-        const buildGeneration = this.coord.generation;
-        const chunks = await this.store.listAllMeta();
-        await this.ensureBinaryIndex(chunks.length);
-        if (chunks.length === 0 || !this.binaryIndex) {
-            // Index advanced under us (reindex completed mid-read) — this empty/partial
-            // read is stale; rebuild against the current store instead of caching it.
-            if (shouldDiscardPartialFrame(buildGeneration, this.coord.generation)) return this.ensureFrame();
-            this.frameCache = null;
-            return null;
-        }
-        const chunkByIdMap = new Map<string, ChunkMeta>();
-        for (const c of chunks) chunkByIdMap.set(c.chunk_id, c);
-
-        const rawIds = this.binaryIndex.ids;
-        const rawPacked = this.binaryIndex.packed;
-        const bytesPerVec = this.binaryIndex.bytesPerVec;
-
-        const orderedChunks: ChunkMeta[] = [];
-        const orderedIds: string[] = [];
-        // Pack the filtered binary buffer directly — one byteOffset memcpy per
-        // surviving row. Pre-size assuming most rows survive; trim at the end.
-        const filteredPacked = new Uint8Array(rawIds.length * bytesPerVec);
-        let filteredCount = 0;
-        for (let i = 0; i < rawIds.length; i++) {
-            const c = chunkByIdMap.get(rawIds[i]);
-            if (!c) continue;
-            orderedChunks.push(c);
-            orderedIds.push(rawIds[i]);
-            filteredPacked.set(
-                rawPacked.subarray(i * bytesPerVec, (i + 1) * bytesPerVec),
-                filteredCount * bytesPerVec,
-            );
-            filteredCount++;
-        }
-        if (filteredCount < rawIds.length) {
-            console.warn(`[seek] dropped ${rawIds.length - filteredCount} orphan binary rows (no chunk sibling) — index may be partially backfilled`);
-        }
-        const activePacked = filteredCount === rawIds.length
-            ? rawPacked
-            : filteredPacked.subarray(0, filteredCount * bytesPerVec);
-
-        // Resident int8 rerank tier: read every {chunk_id → QuantVec} once and
-        // assemble a RAM block aligned to orderedIds (buildResidentRerankBlock),
-        // so stage-2 dequantizes candidates from RAM instead of an IDB
-        // round-trip per keystroke (selectFetchMs). null → stage-2 falls back to
-        // the per-id IDB read (identical behaviour, just without the speedup).
-        // ~388 B/vec → ~1.8 MB at 4800 chunks, smaller than the resident chunk
-        // text. Built off orderedIds (already orphan-filtered) so it can never
-        // misalign with activePacked.
-        // B2 memory gate: on mobile or above the resident byte budget, skip the
-        // resident block entirely — don't even read the int8 tier just to throw
-        // it away. Stage-2 then falls back to the per-id IDB read, which is
-        // relevance-identical (see residentInt8Enabled / buildResidentRerankBlock).
-        // embDim isn't known until an embedding is read, so estimate it from the
-        // binary tier's bytesPerVec (= ceil(d/8)); against a 16 MB budget the
-        // ±7-bit slack is negligible and biases conservative.
-        let resident: ReturnType<typeof buildResidentRerankBlock> = null;
-        if (residentInt8Enabled(orderedIds.length, bytesPerVec * 8)) {
-            const { ids: embIds, vecs: embVecs } = await this.store.listAllEmbeddings();
-            const embById = new Map<string, QuantVec>();
-            for (let i = 0; i < embIds.length; i++) embById.set(embIds[i], embVecs[i]);
-            resident = buildResidentRerankBlock(orderedIds, embById);
-        } else {
-            /* intentionally empty: resident stays null (declared above), so
-               stage-2 falls back to the per-id IDB read — see comment above */
-        }
-
-        // The index advanced while we were assembling (a full reindex completed):
-        // discard this stale-partial frame and rebuild against the current store
-        // rather than caching it under the new generation. Recursion re-enters,
-        // misses the (now stale-gen) cache, and rebuilds; bounded by the rare
-        // completion bump, so it converges in one extra pass.
-        if (shouldDiscardPartialFrame(buildGeneration, this.coord.generation)) return this.ensureFrame();
-        this.frameCache = {
-            orderedChunks, orderedIds, activePacked, bytesPerVec,
-            residentInt8: resident ? resident.int8 : null,
-            residentScales: resident ? resident.scales : null,
-            embDim: resident ? resident.embDim : 0,
-            // Cold build / compaction always yields a fully-live, dense frame:
-            // every row live, no tombstones. Incremental deltas mutate these.
-            validRows: new Array<boolean>(orderedChunks.length).fill(true),
-            tombstoneCount: 0,
-            // F2: stamp the generation we BUILT against (captured pre-await and
-            // re-checked just above), not one that may have advanced during the
-            // awaits — guards against caching a partial frame as fresh. Equal to
-            // this.coord.generation here by the re-check guard, but explicit.
-            generation: buildGeneration,
-        };
-        return this.frameCache;
-    }
-
-    // Ensure the BM25 cache (and the synonym dictionary derived from it) match
-    // dataGeneration + the current index-shape settings. Returns true if served
-    // from cache. Shared by the search hot path and warmCaches() so the two
-    // can never drift on what "warm" means.
-    // True if the resident BM25 cache matches the live generation + index shape.
-    // searchableProperties/headingsField change the INDEX shape (extra fields),
-    // not a per-call option, so flipping either must force a refit. Shared by
-    // ensureBm25 (skip refit) and the search hot path (skip the persisted-load
-    // IDB read on a warm keystroke).
-    private bm25CacheValid(orderedChunks: ChunkMeta[]): boolean {
-        return !!(
-            this.bm25Cache &&
-            this.bm25CacheGeneration === this.coord.generation &&
-            this.bm25CacheChunkCount === orderedChunks.length &&
-            this.bm25CacheProps === this.settings.searchableProperties &&
-            this.bm25CacheHeadings === (this.settings.headingsField || this.settings.boostedBm25)
-        );
-    }
-
-    // Stamp the resident BM25 cache after (re)building it — via fit() OR a
-    // persisted load — and drop the synonym dict (it derives from this index).
-    private stampBm25Cache(chunkCount: number): void {
-        this.bm25CacheGeneration = this.coord.generation;
-        this.bm25CacheChunkCount = chunkCount;
-        this.bm25CacheProps = this.settings.searchableProperties;
-        this.bm25CacheHeadings = this.settings.headingsField || this.settings.boostedBm25;
-        this.synonymCache = null;
-        // phraseCache derives from this index's df — drop with the synonym
-        // dict. linkPairCache is deliberately KEPT: it derives from
-        // metadataCache, not this index (see the field comment).
-        this.phraseCache = null;
-    }
-
-    private async ensureBm25(orderedChunks: ChunkMeta[]): Promise<boolean> {
-        const hit = this.bm25CacheValid(orderedChunks);
-        if (!hit) {
-            const propsEnabled = this.settings.searchableProperties;
-            // boostedBm25 boosts the headings field to 4×, which is inert unless
-            // the field is actually indexed — so the preset implies heading indexing.
-            const headingsEnabled = this.settings.headingsField || this.settings.boostedBm25;
-            // Span the refit: the all-bodies build is the classic cold-start
-            // freeze, and its long tasks previously logged as 'idle' when the
-            // build rode warmCaches instead of a search.
-            this.taskCtx?.push('bm25-warm');
-            try {
-                // Frame-lite: the resident frame is metadata-only, so a (rare) refit
-                // pulls bodies from the chunk_body store first. This IDB read happens
-                // ONLY on a true fit miss — the persisted-load fast path
-                // (tryLoadPersistedBm25) needs no bodies, and a warm keystroke skips
-                // ensureBm25's refit branch entirely (bm25CacheValid hit above).
-                const bodies = await this.store.getBodiesMap(orderedChunks.map(c => c.chunk_id));
-                // orderedChunks is dense post-filter; BM25 indexes match the
-                // unified frame 1:1. If a later refactor lets holes back in,
-                // BM25 fit will throw — keep this guarantee in the loader, not
-                // here.
-                // fitAsync = fit() sliced with cheap yields (scheduler.yield /
-                // setTimeout(0), NOT the rIC pacer — this path can be a search
-                // the user is waiting on, so each yield must cost ~ms, and the
-                // resulting index is provably identical to fit()'s). Assign the
-                // cache only after the build completes — a partially-built index
-                // must never be visible to a concurrent search.
-                const built = await new MultiFieldBM25().fitAsync(orderedChunks, bodies,
-                    { searchableProperties: propsEnabled, headingsField: headingsEnabled }, cheapYield);
-                this.bm25Cache = built;
-                this.stampBm25Cache(orderedChunks.length);
-            } finally {
-                this.taskCtx?.pop('bm25-warm');
-            }
-        }
-        if (this.settings.synonymExpansion && !this.synonymCache) {
-            // O(notes) build, trivially cheap next to fit(); df ceiling reads
-            // the freshly (re)built BM25 index. Telemetry: dictionary shape +
-            // what the guards dropped — silent drops are this feature's main
-            // scaling hazard (adversarial review), so they must be visible.
-            this.synonymCache = buildSynonymMap(orderedChunks, t => this.bm25Cache!.termDocFraction(t));
-        }
-        return hit;
-    }
-
-    // v2 Stage-1 T2 dictionary — built LAZILY, only when the synonymsV2 valve
-    // is on for a search (setting or CLI synv2 override). It ships OFF, so the
-    // default install never pays the mine. The first synv2=true probe after a
-    // re-stamp pays the build (first-call skew; warm the cache before an A/B).
-    // The mine is an O(files) pass over the in-memory metadataCache (no I/O);
-    // before Obsidian resolves the cache it comes back empty — inert, not
-    // wrong, refreshed on the next re-stamp. Runs after ensureBm25, so the v1
-    // dictionary the T1 cross-confirmation reads is already fresh.
-    private ensurePhraseCache(): PhraseSynonymMap | null {
-        if (!this.bm25Cache) return null;
-        if (!this.linkPairCache) {
-            this.linkPairCache = mineLinkPairsByPath(this.app, p => shouldIndexPath(this.app, this.settings, p));
-        }
-        if (!this.phraseCache) {
-            this.phraseCache = buildPhraseMap(
-                aggregateLinkPairs(this.linkPairCache.values()),
-                t => this.bm25Cache!.termDocFraction(t),
-                this.synonymCache ?? undefined,
-            );
-        }
-        return this.phraseCache;
-    }
-
-    // Cold-start fast path: when the resident BM25 cache is cold for the live
-    // generation, load a persisted MiniSearch index from IDB instead of paying the
-    // ~280ms fit() (on mobile the all-bodies refit is the 18.6 s freeze, not 280ms).
-    // Loads when the COMPATIBLE-corpus stamp matches (analyzer/model/dim + index
-    // shape — bm25StampMatches; the corpus size/timestamp are tolerated, so a
-    // stale-but-compatible blob loads and is bounded-recall-stale until the next
-    // delta/catch-up reconciles it — see bm25StampMatches for the safety argument).
-    // A missing blob, a never-completed index (no lastIndexedAt), a stamp mismatch,
-    // or a loadJSON error all leave the cache cold so the synchronous ensureBm25()
-    // below refits. Awaited only on a cold keystroke (the caller guards on
-    // bm25CacheValid), so warm searches never touch IDB here.
-    private async tryLoadPersistedBm25(orderedChunks: ChunkMeta[]): Promise<void> {
-        try {
-            const blob = await this.store.getBm25();
-            if (!blob) return;
-            const meta = await this.store.getMeta();
-            if (!meta.lastIndexedAt) return;   // only trust a COMPLETED index
-            const live = buildBm25Stamp(meta, orderedChunks.length, this.settings);
-            if (!bm25StampMatches(blob.stamp, live)) return;
-            this.bm25Cache = new MultiFieldBM25().fromJSON(blob.json, orderedChunks, {
-                searchableProperties: this.settings.searchableProperties,
-                headingsField: this.settings.headingsField || this.settings.boostedBm25,
-            });
-            this.stampBm25Cache(orderedChunks.length);
-        } catch (e) {
-            // Corrupt blob / loadJSON throw → leave cache cold, ensureBm25 refits.
-            console.warn('[seek] persisted BM25 load failed (refitting)', e);
-        }
-    }
-
-    // Cross-device cold-start fast path (Phase 3): when this device has NO local BM25
-    // blob (a fresh install, or an iOS eviction that wiped IDB), load the gzipped BM25
-    // artifact another device wrote to the synced sidecar instead of refitting over
-    // all bodies (the cold-start freeze). "Sync the BM25, don't rebuild it." Only
-    // reached when tryLoadPersistedBm25 left the cache cold, so a normal device with a
-    // local blob never runs this — the search hot path pays nothing.
-    //
-    // SAFE by the same property as the tolerant local gate: the producer's chunk set
-    // won't exactly equal this consumer's live frame, but bm25StampMatches gates on
-    // analyzer/model/dim/shape (NOT corpus size/timestamp), and fromJSON skips any
-    // posting whose id isn't live + scores absent live chunks 0 — so cross-device
-    // drift is bounded recall staleness, never wrong text. metaAccepts (inside
-    // rankAcceptedProducers) further refuses any producer whose chunker/model/dim this
-    // device can't reproduce. We try producers FRESHEST-FIRST and skip any without a
-    // loadable .gz (mobile writes meta+jsonl but no artifact — emit is desktop-only —
-    // and a gz can be torn/missing), falling through to the next. Any total miss →
-    // return cold → ensureBm25 refits, exactly as before Phase 3 (graceful degrade).
-    //
-    // The precondition is a POPULATED content-id frame (orderedChunks), NOT a local
-    // full reindex: the target case is a fresh/evicted device whose frame came from a
-    // sidecar HYDRATE (meta.lastIndexedAt is null there) — gating on lastIndexedAt
-    // would disable the feature on exactly the device it exists for. A hydrated frame's
-    // content-derived ids are what map the producer's postings, so the frame is the
-    // real precondition. (The local-adopt persist below no-ops on such a device —
-    // persistBm25 self-gates on lastIndexedAt — so it re-loads from the sidecar each
-    // cold start; still fast, still no refit. Caching it locally is a deferred perf
-    // follow-up that needs hydrate to stamp lastIndexedAt+modelId.)
-    private async tryLoadCrossDeviceBm25(orderedChunks: ChunkMeta[]): Promise<void> {
-        if (!this.coord.sidecarOn() || !gzipAvailable()) return;
-        if (orderedChunks.length === 0) return;   // need a populated frame to map postings onto
-        const dir = this.coord.dir;
-        if (!dir) return;
-        const adapter = this.app.vault.adapter;
-        const meta = await this.store.getMeta();
-        const expect = expectationFor();
-        const live = buildBm25Stamp(meta, orderedChunks.length, this.settings);
-        const devs = await rankAcceptedProducers(adapter, dir, expect);
-        for (const dev of devs) {
-            try {
-                const bytes = await adapter.readBinary(bm25PathFor(dir, dev)).catch(() => null);
-                if (!bytes) continue;   // this producer has no .gz (e.g. mobile) — try the next-freshest
-                const rec = JSON.parse(await gunzipToString(bytes)) as { json?: unknown; stamp?: unknown };
-                if (typeof rec.json !== 'string') continue;
-                if (!bm25StampMatches(rec.stamp, live)) continue;   // analyzer/model/dim/shape must match
-                this.bm25Cache = new MultiFieldBM25().fromJSON(rec.json, orderedChunks, {
-                    searchableProperties: this.settings.searchableProperties,
-                    headingsField: this.settings.headingsField || this.settings.boostedBm25,
-                });
-                this.stampBm25Cache(orderedChunks.length);
-                // Adopt locally (no-op on a hydrate-only device; see method comment).
-                void this.persistBm25(orderedChunks);
-                return;
-            } catch (e) {
-                // Corrupt gz / parse error on THIS producer → try the next-freshest.
-                console.warn(`[seek] cross-device BM25 load from ${dev} failed, trying next`, e);
-            }
-        }
-        // No producer yielded a loadable, compatible blob → cache stays cold → ensureBm25 refits.
-    }
-
-    // Persist the warmed BM25 index so the next cold start can skip fit(). Called
-    // fire-and-forget from warmCaches (the quiet post-reindex/delta moment), so
-    // the toJSON serialize + IDB write stay off the search hot path. Gated on a
-    // COMPLETED index (lastIndexedAt non-null) so a partial reindex's index is
-    // never persisted; a failed write just means the next cold start refits.
-    private async persistBm25(orderedChunks: ChunkMeta[]): Promise<void> {
-        try {
-            if (!this.bm25Cache) return;
-            const meta = await this.store.getMeta();
-            if (!meta.lastIndexedAt) return;
-            const stamp = buildBm25Stamp(meta, orderedChunks.length, this.settings);
-            await this.store.putBm25(this.bm25Cache.toJSON(), stamp);
-        } catch (e) {
-            console.warn('[seek] BM25 persist failed (cold start will refit)', e);
-        }
-    }
-
-    // Producer side of the cross-device BM25 artifact (Phase 3). After a FULL reindex's
-    // warm builds the complete index, publish this device's gzipped BM25 blob to the
-    // synced sidecar so a fresh/evicted peer (or this device after an eviction) LOADS
-    // it instead of refitting over all bodies. Desktop-only — the canonical producer:
-    // mobile can't reliably build BM25 here (warmCaches bails on a cold embedder) and
-    // must not write a ~0.6 MB file in a jetsam window. Best-effort: a failure never
-    // touches the (already-warm) local index; the consumer just refits as before. The
-    // artifact is { json: toJSON(), stamp } gzipped — the consumer validates the stamp
-    // (analyzer/model/dim/shape) after gunzip, so a cross-version blob is refused.
-    private async emitCrossDeviceBm25(orderedChunks: ChunkMeta[]): Promise<void> {
-        if (!this.coord.sidecarOn() || isMobilePlatform() || !gzipAvailable()) return;
-        const dir = this.coord.dir;
-        if (!dir || !this.bm25Cache) return;
-        try {
-            const meta = await this.store.getMeta();
-            if (!meta.lastIndexedAt) return;
-            const stamp = buildBm25Stamp(meta, orderedChunks.length, this.settings);
-            const payload = JSON.stringify({ json: this.bm25Cache.toJSON(), stamp });
-            const gz = await gzipString(payload);
-            // Create the sidecar index dir first (mirrors appendTombstone/bulkAppend):
-            // adapter.writeBinary does NOT create parents, so on a fresh install the
-            // first BM25 emit — which can run before any shard write made the dir —
-            // would ENOENT on the `.tmp` write and silently skip the cross-device blob.
-            await ensureDir(this.app.vault.adapter, dir);
-            await writeBytesAtomic(this.app.vault.adapter, bm25PathFor(dir, this.logger.deviceId), gz);
-        } catch (e) {
-            await this.logger.appendError('emitCrossDeviceBm25', e).catch(() => {});
-        }
-    }
-
-    // Throttled embed-free re-persist of the resident BM25 blob. The incremental
-    // delta path patches the resident cache but historically SKIPPED persistBm25, so
-    // after the first in-session delta the disk blob went stale and a cold relaunch
-    // refit over all bodies (pre-2026-06-20, the 18.6 s mobile freeze). Now that the
-    // tolerant cold-load accepts a slightly-stale blob, this keeps it MOSTLY fresh so
-    // the residual the next reconcile/catch-up patches stays tiny. Embed-free (toJSON
-    // + IDB write, no model, no body read), so it is safe to fire on cold mobile.
-    //
-    // Leading-edge throttle: a churny phone runs hundreds of deltas/hydrates a
-    // session; a 4 MB IDB write on each would be its own write-amplification + battery
-    // cost. Throttling to one write per BM25_PERSIST_THROTTLE_MS is fine precisely
-    // because the tolerant gate makes the dropped writes' staleness harmless. Guards
-    // on the resident frame matching the live generation + a valid BM25 cache, so it
-    // never serialises a stale/half-built index; persistBm25 self-gates further.
-    private lastBm25PersistMs = Number.NEGATIVE_INFINITY;
-    private static readonly BM25_PERSIST_THROTTLE_MS = 30_000;
-    private maybePersistResidentBm25(): void {
-        const rf = this.frameCache;
-        if (!rf || rf.generation !== this.coord.generation) return;
-        if (!this.bm25CacheValid(rf.orderedChunks)) return;
-        const now = performance.now();
-        if (now - this.lastBm25PersistMs < SearchOrchestrator.BM25_PERSIST_THROTTLE_MS) return;
-        this.lastBm25PersistMs = now;
-        // Issue #5 (fix E): toJSON is a single ~200-630 ms synchronous block at
-        // vault scale (O(index), independent of the delta size) — now that the
-        // patch itself is ~1 ms, this is essentially ALL of the remaining
-        // per-save main-thread cost (the reporter's trailing 'idle' long-tasks
-        // after commits). Defer it into an idle slot when a compositor exists;
-        // hidden windows run immediately (no frames to jank, and rIC would
-        // only fire via its timeout there). The guards above ran at SCHEDULE
-        // time — up to 5 s stale by run time — so the deferred callback
-        // re-checks disposal and the live generation itself (persistBm25's own
-        // gates are thinner: a non-null cache + a stamped index). At most one
-        // callback is pending (the 30 s throttle gates entry), and dispose()
-        // cancels it so a plugin unload / hot-reload can't run the serialize
-        // against a zombie orchestrator.
-        const run = (): void => {
-            this.pendingPersistIdle = null;
-            if (this.disposed) return;
-            const live = this.frameCache;
-            if (!live || live.generation !== this.coord.generation) return;
-            void this.persistBm25(live.orderedChunks);
-        };
-        if (typeof activeDocument === 'undefined' || activeDocument.hidden || typeof requestIdleCallback !== 'function') {
-            run();
-            return;
-        }
-        this.pendingPersistIdle = requestIdleCallback(() => run(), { timeout: 5000 });
-    }
-    private pendingPersistIdle: number | null = null;
-
-    // Eager cache re-warm. Every index mutation invalidates all four query-path
-    // caches (frame, binary index, BM25, synonym dict), and rebuilding them
-    // lazily put the full cost on the user's NEXT SEARCH — the worst place to
-    // pay it (2026-06-12 live telemetry: idbRead 140–184ms + bm25 fit 277–282ms
-    // on a 4.3k-chunk vault, ~465ms of a 500ms total). Firing this after the
-    // delta/reindex completes moves the rebuild onto the same quiet moment the
-    // flush scheduler already chose for the embed work (note-leave + 5-min
-    // idle / blur / structural debounce) — by construction the user isn't
-    // mid-edit when a delta runs.
-    //
-    // Correctness never depends on this: it walks the SAME ensureFrame /
-    // ensureBm25 fills the search path uses. A search landing mid-warm at
-    // worst duplicates one build; a delta landing mid-warm bumps
-    // dataGeneration, the stale build fails its generation check, and that
-    // delta's own warm call (or the lazy path) rebuilds.
-    //
-    // Cold mobile (embedder unloaded) is special: we must NOT run the eager
-    // ensureBm25 build — its getBodiesMap(ALL ids) IS the 18.6 s freeze, and
-    // building multi-MB resident caches the user may never query violates the
-    // lazy-load contract. BUT if the resident caches are ALREADY warm for the live
-    // generation (a search/delta populated them this session), the embed-free
-    // re-persist is cheap (toJSON + IDB write — no embedder, no body read) and keeps
-    // the cold-start blob fresh so the NEXT relaunch loads instead of refits. So on
-    // cold mobile we persist-if-resident and stand down; desktop always warms.
-    private warming = false;
-    async warmCaches(trigger: string): Promise<void> {
-        // A warm is already in flight — safe to return. invalidateBm25Cache()
-        // bumps dataGeneration BEFORE its paired warmCaches() call (see the delta /
-        // hydrate / reindex sites), so the active warm sees the newer generation in
-        // its loop guard below and rebuilds for it. The old bare `return` here
-        // silently DROPPED a superseded warm: a delta completing mid-warm bumped the
-        // generation, its warmCaches() hit this guard and bailed, and the in-flight
-        // warm finished one generation stale — leaving the cache cold until the next
-        // search ate the full ~280ms rebuild. That was the RACE/STALE miss class
-        // (~30% of cold misses in the desktop logs).
-        if (this.warming) return;
-        if (isMobilePlatform() && !this.embedder.loaded) {
-            // Persist-if-resident, never build (see the method comment). The throttled
-            // helper guards on frameCache at the live generation + a valid BM25 cache
-            // (no IDB read, no model), so a cold-mobile hydrate/delta keeps the disk
-            // blob fresh without paying the all-bodies build that IS the freeze.
-            this.maybePersistResidentBm25();
-            return;
-        }
-        this.warming = true;
-        // v16 (issue #5): name the trigger. The one unexplained artifact in
-        // wlo2's full report was a mid-session 1.63 s bm25-warm refit whose
-        // cause the logs couldn't attribute — this beat answers "what asked
-        // for the rebuild" the next time it happens.
-        this.forensics?.beat('bm25-warm-start', { trigger });
-        try {
-            // Rebuild until the cache matches the LIVE generation. ensureFrame()
-            // awaits IDB, so an invalidation can land mid-build and bump
-            // dataGeneration past what ensureBm25() just stamped onto
-            // bm25CacheGeneration; the guard then loops once more for the new state.
-            // Deltas are serialized on the write mutex and debounced by the flush
-            // scheduler, so this converges in 1–2 passes under real editing.
-            let warmedChunks: ChunkMeta[] | null = null;
-            do {
-                const frame = await this.ensureFrame();
-                if (!frame) break;
-                await this.ensureBm25(frame.orderedChunks);
-                warmedChunks = frame.orderedChunks;
-            } while (this.bm25CacheGeneration !== this.coord.generation);
-            // Persist the converged, warmed BM25 index so the next cold start can
-            // skip fit() (fire-and-forget — the serialize + write ride this quiet
-            // moment, not the search hot path; persistBm25 self-gates on a
-            // completed index and swallows its own errors).
-            if (warmedChunks && this.bm25CacheGeneration === this.coord.generation) {
-                void this.persistBm25(warmedChunks);
-                // Producer: publish the gzipped BM25 to the cross-device sidecar on a
-                // full reindex only (the authoritative complete build; desktop-only —
-                // see emitCrossDeviceBm25). Deltas don't republish: the consumer's
-                // tolerant load + reconcile absorbs the producer's post-reindex drift.
-                if (trigger === 'full-reindex') void this.emitCrossDeviceBm25(warmedChunks);
-            }
-        } catch (e) {
-            // Lazy rebuild on next search remains the backstop — never throw.
-            console.warn('[seek] cache re-warm failed (next search rebuilds lazily)', e);
-        } finally {
-            this.warming = false;
-        }
-    }
-
-    // BM25 cache. Validity is determined by:
-    //   1. dataGeneration — bumped by invalidateBm25Cache() (called from reindex)
-    //   2. chunk count — belt-and-braces, catches a missed invalidation
-    //
-    // The earlier "compare orderedChunks by reference" design always missed
-    // because orderedChunks is rebuilt per call; the cache hit rate stayed at
-    // 0% in production logs until the new bm25CacheHit telemetry exposed it.
-    private bm25Cache: MultiFieldBM25 | null = null;
-    private bm25CacheGeneration = -1;
-    private bm25CacheChunkCount = -1;
-    private bm25CacheProps = false;    // searchableProperties the cache was fit with
-    private bm25CacheHeadings = false; // headingsField the cache was fit with
-
-    // Alias-dictionary synonym map (synonyms.ts). Built lazily alongside the
-    // BM25 cache (same dataGeneration lifecycle — it reads the same chunk set
-    // AND the BM25 index's df for the junk-alias ceiling) and only when the
-    // synonymExpansion setting is on; toggling the setting later builds it on
-    // the next search. Nulled with the BM25 cache in invalidateBm25Cache().
-    private synonymCache: SynonymMap | null = null;
-
-    // v2 Stage-1 T2 dictionaries (synonyms.ts buildPhraseMap + link-dict.ts).
-    // Built LAZILY by ensurePhraseCache, only when the synonymsV2 valve is on
-    // (both stay null on a default install). Two lifecycles on purpose:
-    //   - phraseCache follows the BM25 cache exactly (its df ceiling reads the
-    //     live index) — nulled by stampBm25Cache like synonymCache;
-    //   - linkPairCache (per NOTE PATH → that note's piped pairs) derives from
-    //     app.metadataCache, NOT this index, so a BM25 re-stamp keeps it and
-    //     applyDelta patches ONLY touched paths in place (a stale pair is a
-    //     WRONG mate — stricter than v1's stale-df tolerance). Nulled only on
-    //     invalidateBm25Cache (full nuke → full re-mine).
-    private phraseCache: PhraseSynonymMap | null = null;
-    private linkPairCache: Map<string, LinkPairCount[]> | null = null;
-
-    // BM25 per-field boosts. Eval-tuned constants (bm25.ts DEFAULT_FIELD_BOOSTS)
-    // since the per-field sliders were removed 2026-06-08 (low marginal leverage
-    // once the coverage navigational boost is in). Passed to getScores per-query;
-    // the cached index is boost-agnostic so there's no reindex on change.
-    private bm25FieldBoosts(): Record<string, number> {
-        if (!this.settings.boostedBm25) return DEFAULT_FIELD_BOOSTS;
-        // "Boosted BM25" preset: lift the name/structure fields (aliases→9,
-        // headings→4) and trim noisy tags (→2); title/content/properties keep
-        // their defaults. aliases/tags take effect here at
-        // score time; headings needs its field indexed, which ensureBm25()
-        // forces on whenever boostedBm25 is set.
-        return { ...DEFAULT_FIELD_BOOSTS, aliases: 9.0, tags: 2.0, headings: 4.0 };
-    }
-
-    // Despite the name, invalidates BOTH the BM25 cache AND the resident
-    // binary index — they share `dataGeneration` as the source of truth, so
-    // bumping it forces both to reload on the next search. Kept under the
-    // old name to avoid churn in main.ts; both consumers want exactly the
-    // same trigger (the underlying chunk set changed).
-    invalidateBm25Cache(): void {
-        this.bm25Cache = null;
-        this.bm25CacheGeneration = -1;
-        this.bm25CacheChunkCount = -1;
-        this.synonymCache = null;
-        this.phraseCache = null;
-        this.linkPairCache = null;
-        this.binaryIndex = null;
-        // Also drop the resident frame so its ~MB of chunk text doesn't linger
-        // past a reindex; the dataGeneration bump already invalidates it, this
-        // just frees the memory promptly.
-        this.frameCache = null;
-        this.coord.bumpGeneration();
-    }
+    private ensureFrame() { return this.res.ensureFrame(); }
+    private ensureBm25(c: ChunkMeta[]) { return this.res.ensureBm25(c); }
+    private bm25CacheValid(c: ChunkMeta[]) { return this.res.bm25Valid(c); }
+    private ensurePhraseCache() { return this.res.ensurePhrases(); }
+    private bm25FieldBoosts() { return this.res.boosts(); }
+    private getDenseBgStats() { return this.res.denseBg(); }
+    private tryLoadPersistedBm25(c: ChunkMeta[]) { return this.res.tryLoadPersisted(c); }
+    private tryLoadCrossDeviceBm25(c: ChunkMeta[]) { return this.res.tryLoadCrossDevice(c); }
+    private maybePersistResidentBm25() { this.res.maybePersistResident(); }
+    warmCaches(trigger: string): Promise<void> { return this.res.warm(trigger); }
+    // Name kept for main.ts: it drops every generation-keyed cache, not just BM25.
+    invalidateBm25Cache(): void { this.res.invalidate(); }
 }
