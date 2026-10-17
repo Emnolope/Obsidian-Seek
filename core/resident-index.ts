@@ -1,11 +1,10 @@
-// fork 1.1.3: lifted from SearchOrchestrator in src/search.ts (ensureBinaryIndex, ensureFrame, getDenseBgStats,
-// bm25CacheValid, stampBm25Cache, ensureBm25, ensurePhraseCache, tryLoadPersistedBm25, tryLoadCrossDeviceBm25,
-// persistBm25, emitCrossDeviceBm25, maybePersistResidentBm25, warmCaches, invalidateBm25Cache and the fields they own).
-// Bodies are unchanged except this.<port> -> p.<port>; the orchestrator keeps thin proxies so callers and tests don't move.
-//
-// WHY one class: every cache here is keyed on the same generation counter. Moving them one method at a time
-// would have spread that counter across a port per method. Now the plugin (IndexedDB) and the MCP (RAM/disk)
-// each supply storage once and get identical cache semantics.
+// Resident caches (frame, binary index, BM25, synonyms, warm/persist), lifted out of SearchOrchestrator so any host can own them.
+// Provenance: each member below carries a `fork` pointer to its upstream method (see PROVENANCE.md). Renames, since the pointer is the mapping:
+//   frameCache->frame  bm25Cache->bm25  bm25CacheGeneration->bm25Gen  bm25CacheChunkCount->bm25N  bm25CacheProps/Headings->bm25Props/Headings
+//   synonymCache->synonyms  phraseCache->phrases  linkPairCache->linkPairs  binaryIndex->binary  bgStatsCache/bgStatsGen->bgStats/bgGen
+//   lastBm25PersistMs->lastPersistMs  pendingPersistIdle (an rIC id)->cancelIdle (a cancel fn)  this.coord/store/settings/forensics/taskCtx/embedder/app -> ports
+// Bodies are unchanged except port substitution. Deviations: cross-device BM25 producer loop moved to the host (ResidentPorts.peerBm25);
+// gzip+write moved to ResidentPorts.publishBm25. WHY one class: all of it keys on one generation counter.
 
 import type { ChunkMeta, SeekSettings } from './types.ts';
 import { MultiFieldBM25, DEFAULT_FIELD_BOOSTS } from './bm25.ts';
@@ -79,6 +78,7 @@ export class ResidentIndex {
         if (this.cancelIdle) { this.cancelIdle(); this.cancelIdle = null; }
     }
 
+    // fork 1.1.3 src/search.ts:3886 SearchOrchestrator.getDenseBgStats
     async denseBg(): Promise<{ mean: number; std: number } | null> {
         const p = this.p;
         if (this.bgGen === p.coord.generation) return this.bgStats;
@@ -88,6 +88,7 @@ export class ResidentIndex {
         return this.bgStats;
     }
 
+    // fork 1.1.3 src/search.ts:3827 SearchOrchestrator.ensureBinaryIndex
     async ensureBinary(expectedChunkCount: number): Promise<boolean> {
         const p = this.p;
         if (this.binary && this.binary.generation === p.coord.generation) return true;
@@ -102,6 +103,7 @@ export class ResidentIndex {
         return false;
     }
 
+    // fork 1.1.3 src/search.ts:3901 SearchOrchestrator.ensureFrame
     async ensureFrame(): Promise<ResidentFrame | null> {
         const p = this.p;
         // Loop, not check-once: a new delta can start before we wake. No-op during a full reindex (intended: queryable as it fills).
@@ -164,6 +166,7 @@ export class ResidentIndex {
         return this.frame;
     }
 
+    // fork 1.1.3 src/search.ts:4020 SearchOrchestrator.bm25CacheValid
     // searchableProperties/headingsField change the INDEX shape, so flipping either must force a refit.
     bm25Valid(orderedChunks: ChunkMeta[]): boolean {
         const s = this.p.settings;
@@ -176,6 +179,7 @@ export class ResidentIndex {
         );
     }
 
+    // fork 1.1.3 src/search.ts:4032 SearchOrchestrator.stampBm25Cache
     // linkPairs is deliberately KEPT on restamp: it derives from link metadata, not this index.
     stampBm25(chunkCount: number): void {
         const s = this.p.settings;
@@ -187,6 +191,7 @@ export class ResidentIndex {
         this.phrases = null;
     }
 
+    // fork 1.1.3 src/search.ts:4040 SearchOrchestrator.ensureBm25
     async ensureBm25(orderedChunks: ChunkMeta[]): Promise<boolean> {
         const p = this.p;
         const hit = this.bm25Valid(orderedChunks);
@@ -212,6 +217,7 @@ export class ResidentIndex {
         return hit;
     }
 
+    // fork 1.2.1 src/search.ts:4181 SearchOrchestrator.ensurePhraseCache
     ensurePhrases(): PhraseSynonymMap | null {
         if (!this.bm25) return null;
         if (!this.linkPairs) this.linkPairs = this.p.mineLinkPairs();
@@ -225,11 +231,13 @@ export class ResidentIndex {
         return this.phrases;
     }
 
+    // fork 1.1.3 src/search.ts:4457 SearchOrchestrator.bm25FieldBoosts
     boosts(): Record<string, number> {
         if (!this.p.settings.boostedBm25) return DEFAULT_FIELD_BOOSTS;
         return { ...DEFAULT_FIELD_BOOSTS, aliases: 9.0, tags: 2.0, headings: 4.0 };
     }
 
+    // fork 1.1.3 src/search.ts:4097 SearchOrchestrator.tryLoadPersistedBm25
     // Cold-start fast path: loading a persisted index beats the all-bodies refit (the 18.6 s mobile freeze).
     // The stamp gate tolerates corpus size/timestamp drift (bounded recall staleness, never wrong text).
     async tryLoadPersisted(orderedChunks: ChunkMeta[]): Promise<void> {
@@ -251,6 +259,7 @@ export class ResidentIndex {
         }
     }
 
+    // fork 1.1.3 src/search.ts:4143 SearchOrchestrator.tryLoadCrossDeviceBm25
     // Target: a fresh/evicted device whose frame came from a sidecar hydrate. The populated frame, not a local
     // full reindex, is the precondition, since hydrate leaves lastIndexedAt null.
     async tryLoadCrossDevice(orderedChunks: ChunkMeta[]): Promise<void> {
@@ -272,6 +281,7 @@ export class ResidentIndex {
         }
     }
 
+    // fork 1.1.3 src/search.ts:4181 SearchOrchestrator.persistBm25
     // Fire-and-forget from warm; gated on a COMPLETED index so a partial reindex is never persisted.
     async persist(orderedChunks: ChunkMeta[]): Promise<void> {
         const p = this.p;
@@ -286,6 +296,7 @@ export class ResidentIndex {
         }
     }
 
+    // fork 1.1.3 src/search.ts:4202 SearchOrchestrator.emitCrossDeviceBm25
     async emitCrossDevice(orderedChunks: ChunkMeta[]): Promise<void> {
         const p = this.p;
         if (!p.publishBm25 || !this.bm25) return;
@@ -299,6 +310,7 @@ export class ResidentIndex {
         }
     }
 
+    // fork 1.1.3 src/search.ts:4239 SearchOrchestrator.maybePersistResidentBm25
     // Leading-edge throttle: a 4 MB write per delta on a churny phone is pure write amplification, and the
     // tolerant cold-load makes dropped writes harmless.
     maybePersistResident(): void {
@@ -321,6 +333,7 @@ export class ResidentIndex {
         this.cancelIdle = p.idle(run);
     }
 
+    // fork 1.1.3 src/search.ts:4299 SearchOrchestrator.warmCaches
     // Cold mobile must not build (the all-bodies read IS the freeze); it only re-persists what is already resident.
     async warm(trigger: string): Promise<void> {
         const p = this.p;
@@ -349,6 +362,7 @@ export class ResidentIndex {
         }
     }
 
+    // fork 1.1.3 src/search.ts:4472 SearchOrchestrator.invalidateBm25Cache
     // Name kept from the original: it drops every generation-keyed cache, not just BM25.
     invalidate(): void {
         this.bm25 = null;

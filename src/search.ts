@@ -2034,7 +2034,7 @@ export class SearchOrchestrator {
         };
     }
 
-    // Cache layer lives in core/resident-index.ts; these proxies keep orchestrator callers and tests unchanged.
+    // fork 1.1.3 new; relates to src/search.ts:3827-4472 (ensureBinaryIndex..invalidateBm25Cache). Cache layer lives in core/resident-index.ts; these proxies keep orchestrator callers and tests unchanged.
     private res!: ResidentIndex;
     private residentPorts(): ResidentPorts {
         const o = this;
@@ -2047,6 +2047,7 @@ export class SearchOrchestrator {
             yield: cheapYield,
             embedderLoaded: () => o.embedder.loaded,
             disposed: () => o.disposed,
+            // fork 1.1.3 new; relates to src/search.ts:4143 SearchOrchestrator.tryLoadCrossDeviceBm25 (the producer-walk half; the stamp/load half is ResidentIndex.tryLoadCrossDevice)
             peerOn: () => o.coord.sidecarOn() && gzipAvailable() && !!o.coord.dir,
             peerBm25: async accept => {
                 if (!o.coord.sidecarOn() || !gzipAvailable()) return null;
@@ -2068,6 +2069,7 @@ export class SearchOrchestrator {
                 }
                 return null;
             },
+            // fork 1.1.3 new; relates to src/search.ts:4202 SearchOrchestrator.emitCrossDeviceBm25 (gzip + atomic write half)
             get publishBm25() {
                 const dir = o.coord.dir;
                 if (!o.coord.sidecarOn() || isMobilePlatform() || !gzipAvailable() || !dir) return null;

@@ -31,12 +31,15 @@
 - In runSearch, the BM25 index handle is captured once after prepareBm25 (the original re-read the live field at the end). Differs only if the cache is invalidated mid-search.
 
 ## Next work (ask him which first)
-A. (PARTLY DONE) SearchOrchestrator indexing/delta/reindex logic behind ports. Done and in core/: delta.ts (computeDelta, rules, chunksFor), file-diff.ts, apply-delta.ts, embed-commit.ts (whole write pass), index-types.ts. Remaining in src/search.ts: reindexAll/reindexAllInner, reindexDelta, reconcileIdentityInPlace, sweepOrphanChunks, compaction, sidecar hydrate/dedup/carry-over, ensureFrame/ensureBinaryIndex, emitProgress. The plugin side supplies each port via `embedCommitCtx()`, `searchHost()`, and inline ctx objects. This is what gives the MCP WRITE access to the index; he wants human and bot both able to read and write. The on-disk format is the shared contract, so ASK before changing it.
+A. (PARTLY DONE) SearchOrchestrator indexing/delta/reindex logic behind ports. Done and in core/: delta.ts (computeDelta, rules, chunksFor), file-diff.ts, apply-delta.ts, embed-commit.ts (whole write pass), index-types.ts. Remaining in src/search.ts: reindexAll/reindexAllInner, reindexDelta, reconcileIdentityInPlace, sweepOrphanChunks, compaction, sidecar hydrate/dedup/carry-over, emitProgress. (ensureFrame/ensureBinaryIndex and all other cache methods are now DONE: `core/resident-index.ts` `ResidentIndex`, ports in `residentPorts()` in src/search.ts; src/search.ts keeps one-line proxies.) The plugin side supplies each port via `embedCommitCtx()`, `searchHost()`, and inline ctx objects. This is what gives the MCP WRITE access to the index; he wants human and bot both able to read and write. The on-disk format is the shared contract, so ASK before changing it.
 B. Sidecar hydration, BM25 persistence (tryLoadPersistedBm25, cross-device), reconcile logic.
 C. Embedder runtime: src/embedder.ts and iframe-runner.ts versus mcp/vendor/seek/src/* (pinned copies with 2-6 lines of drift each). None of the plugin originals import `obsidian`, so the MCP could import them directly. Needs his phone to test.
 D. Plugin exporter always writes `Seek Index/MCP Export` even when the index lives under `.obsidian/plugins/seek/index` (the MCP resolver checks hidden first, then visible).
 E. His original Seek complaints: could not delete vectors held in IndexedDB; desktop-to-mobile sync never worked (built for iCloud/Obsidian Sync; he wants Syncthing).
 F. Housekeeping: mcp/ docs still describe the old two-repo layout and /workspaces/Obsidian-Seek; HANDOFF.md in mcp/ is stale; Obsidian-Seek-MCP repo's fate undecided (now just a pointer).
+
+## Provenance (READ PROVENANCE.md)
+Every lifted function needs a `// fork <tag> src/FILE.ts:LINE Class.method` pointer, pinned to tag line numbers (find them with `git show 1.1.3:src/search.ts | grep -n`). A new file without pointers is unmaintainable for the next upstream merge. Do this in the same commit as the move.
 
 ## How to work here
 - Moves: `git mv src/x.ts core/x.ts`, then write the shim. Then run `npx tsc --noEmit -p tsconfig.core.json` and fix what it names.
