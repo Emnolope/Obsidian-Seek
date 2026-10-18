@@ -49,8 +49,9 @@ import { embedAndCommit, type EmbedCommitCtx, type SidecarFlushJob } from '../co
 import { applyDelta as applyDeltaCore } from '../core/apply-delta';
 import { reconcileIdentityInPlace } from '../core/reconcile';
 import { dedupViaSidecar as dedupViaSidecarCore, carryOverHydrate as carryOverHydrateCore } from '../core/hydrate-before-embed';
-import { harvestCarryOverInto as harvestCarryOverIntoCore, reconcileGhostDirt as reconcileGhostDirtCore, deltaFallback as deltaFallbackCore, exportMcpAfterSuccessfulCommit as exportMcpAfterSuccessfulCommitCore } from '../core/delta-tail';
+import { harvestCarryOverInto as harvestCarryOverIntoCore, reconcileGhostDirt as reconcileGhostDirtCore, deltaFallback as deltaFallbackCore, exportMcpAfterSuccessfulCommit as exportMcpAfterSuccessfulCommitCore, emitProgress as emitProgressCore } from '../core/delta-tail';
 import { sweepOrphanChunks as sweepOrphanChunksCore } from '../core/orphan-sweep';
+import { reChunkLive as reChunkLiveCore, collectLiveIds as collectLiveIdsCore, type LiveOracleCtx } from '../core/live-oracle';
 import { reindexAll as reindexAllCore } from '../core/reindex-all';
 import { reindexDelta as reindexDeltaCore } from '../core/reindex-delta';
 import { flushSidecarAfterPass as flushSidecarAfterPassCore, runSidecarFlush as runSidecarFlushCore } from '../core/sidecar-flush';
@@ -782,102 +783,22 @@ export class SearchOrchestrator {
         return result;
     }
 
-    // Re-chunk every live, indexable note AND .base — the liveness oracle for a
-    // full hydrate. Mirrors computeDelta's file filter (indexableFiles, so bases
-    // are included) AND embedAndCommitFiles' full chunk pipeline: chunksFor THEN
-    // enforceTokenBudget, so chunk_ids match exactly what indexing produced —
-    // including base chunks (chunksFor → chunkBase), which is what lets the phone
-    // rehydrate base vectors embed-free instead of dropping them. The token-budget
-    // re-split is load-bearing,
-    // NOT optional: chunk_id = chunkIdFor(path, title, content), and on long
-    // notes indexing splits oversize chunks into new contents → new ids. Without
-    // reproducing that split here, the sidecar lookup missed every split note
-    // (hydrated:0 → fell back to a full on-device re-embed → iPhone jetsam; see
-    // the 2026-06-14 forensics). Loads the tokenizer ONLY (a few MB, no ~250 MB
-    // model) so the hydrate stays mobile-safe.
     private async reChunkLive(): Promise<ReChunkedNote[]> {
-        await this.embedder.ensureTokenizer();
-        const out: ReChunkedNote[] = [];
-        for (const f of this.indexableFiles().filter(f => this.shouldIndex(f.path))) {
-            let content: string;
-            try {
-                content = await this.app.vault.cachedRead(f);
-            } catch {
-                continue;
-            }
-            let chunks = this.chunksFor(content, f.path, new Date(f.stat.mtime).toISOString());
-            if (chunks.length === 0) continue;
-            try {
-                chunks = (await enforceTokenBudget(chunks, ts => this.embedder.tokenCounts(ts))).chunks;
-            } catch (e) {
-                // Tokenizer hiccup on one note — skip its hydrate (it just embeds
-                // later via the catch-up); never abort the whole hydrate.
-                await this.logger.appendError(`reChunkLive-tokenBudget:${f.path}`, e);
-                continue;
-            }
-            if (chunks.length > 0) out.push({ notePath: f.path, mtimeMs: f.stat.mtime, chunks, contentHash: cyrb53Hex(content) });
-        }
-        return out;
+        return reChunkLiveCore(this.liveOracleCtx());
     }
 
-    // The live-vault chunk_id set + whether it is COMPLETE — the liveness oracle for
-    // sidecar compaction. Mirrors reChunkLive's id pipeline (chunksFor THEN
-    // enforceTokenBudget over indexableFiles, so ids match what indexing wrote for
-    // both notes and bases — without the base coverage compaction would count every
-    // base chunk dead and GC it). Returns only ids and,
-    // critically, a completeness flag: reChunkLive SWALLOWS per-note read/tokenizer
-    // errors (hydrate only skips, which is non-destructive), but compaction DELETES on
-    // this oracle, so a single skipped note would wrongly drop that note's live records.
-    // `complete:false` on ANY skip tells the caller to abort the compaction and retry
-    // when the transient error clears. Empty notes (no chunks) are not skips — they have
-    // no ids to drop. Kept separate from reChunkLive on purpose: the load-bearing hydrate
-    // path stays untouched, at the cost of one extra (tokenizer-only) re-chunk per session.
     private async collectLiveIds(): Promise<{ ids: Set<string>; complete: boolean }> {
-        const ids = new Set<string>();
-        try {
-            await this.embedder.ensureTokenizer();
-        } catch (e) {
-            // A tokenizer-load failure (model files mid-sync on a cold mobile launch) makes
-            // the whole snapshot untrustworthy — report incomplete (transient → caller
-            // retries) rather than throwing into an anonymous swallowed catch upstream.
-            await this.logger.appendError('collectLiveIds-ensureTokenizer', e);
-            return { ids, complete: false };
-        }
-        let complete = true;
-        let sinceYield = 0;
-        for (const f of this.indexableFiles().filter(f => this.shouldIndex(f.path))) {
-            // Yield the main thread every few files: this whole-vault re-chunk +
-            // tokenizer pass runs at least once per session (any sidecar past the
-            // byte floor reaches the oracle even when nothing is dead) and was a
-            // solid CPU burn with no yields — issue #5-class background jank.
-            // cheapYield (scheduler.yield / setTimeout(0)), NOT the rIC pacer:
-            // this runs inside compactDevice's dir lock, and an rIC wait can
-            // stall up to its 1 s timeout per yield under interaction — starving
-            // a concurrent flush's sidecar append. ~ms-bounded cost instead.
-            if (++sinceYield >= 8) { sinceYield = 0; await cheapYield(); }
-            let content: string;
-            try {
-                content = await this.app.vault.cachedRead(f);
-            } catch (e) {
-                // read error (e.g. an iCloud file not yet downloaded) → snapshot incomplete →
-                // unsafe to delete. Logged with the path: this is the likeliest cause of a
-                // persistent 'incomplete-rechunk' skip, so it must not be silent.
-                complete = false;
-                await this.logger.appendError(`collectLiveIds-read:${f.path}`, e);
-                continue;
-            }
-            let chunks = this.chunksFor(content, f.path, new Date(f.stat.mtime).toISOString());
-            if (chunks.length === 0) continue; // genuinely empty note — no ids, not a skip
-            try {
-                chunks = (await enforceTokenBudget(chunks, ts => this.embedder.tokenCounts(ts))).chunks;
-            } catch (e) {
-                complete = false; // tokenizer hiccup → incomplete
-                await this.logger.appendError(`collectLiveIds-tokenBudget:${f.path}`, e);
-                continue;
-            }
-            for (const c of chunks) ids.add(c.chunk_id);
-        }
-        return { ids, complete };
+        return collectLiveIdsCore(this.liveOracleCtx());
+    }
+
+    private liveOracleCtx(): LiveOracleCtx<TFile> {
+        const o = this;
+        return {
+            embedder: o.embedder, logger: o.logger,
+            indexableFiles: () => liveOf(o.indexableFiles()), shouldIndex: p => o.shouldIndex(p), cheapYield,
+            read: f => o.app.vault.cachedRead(f.handle),
+            chunksFor: (content, path, modifiedIso) => o.chunksFor(content, path, modifiedIso),
+        };
     }
 
     // Compact THIS device's own sidecar (jsonl + shards) if it has accumulated enough
@@ -1168,25 +1089,7 @@ export class SearchOrchestrator {
         chunksEmitted: number,
         elapsedMs: number,
     ): Promise<void> {
-        // index-progress is a high-volume per-batch firehose that's ALSO mirrored into
-        // the crash-forensics breadcrumb ring (the copy that survives a jetsam kill — the
-        // one that matters for crash classification). Persist it to the NDJSON only under
-        // verboseTrace; index-complete still records the per-run summary unconditionally.
-        if (!this.settings.verboseTrace) return;
-        // Storage probe runs alongside heap so iOS gets a non-null signal too.
-        const mem = await snapshotMemory();
-        const entry: IndexProgressEntry = {
-            type: 'index-progress',
-            timestamp: new Date().toISOString(),
-            phase,
-            filesSeen,
-            filesTotal,
-            chunksEmitted,
-            elapsedMs: parseFloat(elapsedMs.toFixed(2)),
-            heapMB: mem.heapMB,
-            storageMB: mem.storageMB,
-        };
-        await this.logger.append(entry);
+        return emitProgressCore({ settings: this.settings, logger: this.logger }, phase, filesSeen, filesTotal, chunksEmitted, elapsedMs);
     }
 
     // Resolve the per-search FilterContext from live app + settings: the set of

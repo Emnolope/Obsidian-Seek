@@ -1,5 +1,7 @@
 // Small helpers the delta pass leans on. The state each one touches (stores, caches, counters) belongs to the host and arrives through its ctx.
 import type { QuantVec } from './quant.ts';
+import type { IndexProgressEntry } from './types.ts';
+import { snapshotMemory } from './types.ts';
 import type { DiffStore } from './file-diff.ts';
 import { embedInput } from './token-budget.ts';
 
@@ -17,6 +19,10 @@ export interface ExportCtx {
     exportMcpIndex(): Promise<{ generation: string; chunkCount: number }>;
     forensics: { beat(type: string, detail?: Record<string, unknown>): void } | null;
     logger: { appendError(context: string, e: unknown): Promise<void> };
+}
+export interface ProgressCtx {
+    settings: { verboseTrace?: boolean };
+    logger: { append(entry: IndexProgressEntry): Promise<unknown> };
 }
 export interface FallbackCtx {
     deltaFallbackCounts: Map<string, number>;
@@ -119,4 +125,34 @@ export async function exportMcpAfterSuccessfulCommit(ctx: ExportCtx, mode: 'full
     } catch (e) {
         await ctx.logger.appendError(`mcp-export:${mode}`, e).catch(() => {});
     }
+}
+
+// fork 1.1.3 src/search.ts:3232 SearchOrchestrator.emitProgress
+export async function emitProgress(
+    ctx: ProgressCtx,
+    phase: IndexProgressEntry['phase'],
+    filesSeen: number,
+    filesTotal: number,
+    chunksEmitted: number,
+    elapsedMs: number,
+): Promise<void> {
+    // index-progress is a high-volume per-batch firehose that's ALSO mirrored into
+    // the crash-forensics breadcrumb ring (the copy that survives a jetsam kill — the
+    // one that matters for crash classification). Persist it to the NDJSON only under
+    // verboseTrace; index-complete still records the per-run summary unconditionally.
+    if (!ctx.settings.verboseTrace) return;
+    // Storage probe runs alongside heap so iOS gets a non-null signal too.
+    const mem = await snapshotMemory();
+    const entry: IndexProgressEntry = {
+        type: 'index-progress',
+        timestamp: new Date().toISOString(),
+        phase,
+        filesSeen,
+        filesTotal,
+        chunksEmitted,
+        elapsedMs: parseFloat(elapsedMs.toFixed(2)),
+        heapMB: mem.heapMB,
+        storageMB: mem.storageMB,
+    };
+    await ctx.logger.append(entry);
 }
