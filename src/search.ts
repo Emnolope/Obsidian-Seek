@@ -50,6 +50,7 @@ import { applyDelta as applyDeltaCore } from '../core/apply-delta';
 import { reconcileIdentityInPlace } from '../core/reconcile';
 import { dedupViaSidecar as dedupViaSidecarCore, carryOverHydrate as carryOverHydrateCore } from '../core/hydrate-before-embed';
 import { harvestCarryOverInto as harvestCarryOverIntoCore, reconcileGhostDirt as reconcileGhostDirtCore, deltaFallback as deltaFallbackCore, exportMcpAfterSuccessfulCommit as exportMcpAfterSuccessfulCommitCore } from '../core/delta-tail';
+import { sweepOrphanChunks as sweepOrphanChunksCore } from '../core/orphan-sweep';
 import { reindexAll as reindexAllCore } from '../core/reindex-all';
 import { reindexDelta as reindexDeltaCore } from '../core/reindex-delta';
 import { flushSidecarAfterPass as flushSidecarAfterPassCore, runSidecarFlush as runSidecarFlushCore } from '../core/sidecar-flush';
@@ -655,50 +656,9 @@ export class SearchOrchestrator {
         return ids.some(id => id !== this.logger.deviceId);
     }
 
-    // Referential-integrity sweep (Phase 3 steady-state GC): delete every chunk no
-    // FILES record references — orphans from an overwritten file record (hydrate /
-    // applyDelta swapping a changed note's ids) or a missed delete event. They sit
-    // in chunk_meta, so they can surface stale content; this is freshness + space,
-    // not just disk. Pure IDB set-arithmetic — NO re-chunk / embed / GPU — so it is
-    // mobile-safe; batched under the write mutex with an optional abort so it never
-    // blocks an active search for long. Re-syncs caches after any delete (orphans
-    // sit in the resident frame until invalidate + warm rebuilds it). Returns the
-    // count removed + whether the pass completed (a backgrounding abort resumes on
-    // the next poll). Complements the identity cascade: that clears VERSION-bump
-    // orphans (nuke + rehydrate), this clears SAME-version churn.
     async sweepOrphanChunks(opts: { shouldContinue?: () => boolean } = {}): Promise<{ removed: number; completed: boolean }> {
-        // Snapshot all chunk ids + the referenced set TOGETHER under the write mutex.
-        // The embed commit is one atomic tx now (S1: chunks + file record together),
-        // but the HYDRATE path still flushes chunk batches before its file records
-        // land (batches span file boundaries), so an UNLOCKED snapshot could catch a
-        // just-hydrated chunk before its record and delete it as a false orphan —
-        // and pre-S1 indexes can still hold genuinely record-less chunks. (Content-
-        // addressing makes that self-healing, but it is still a real freshness hit,
-        // so keep the snapshot locked.) The only residual — a rare re-add of the SAME
-        // content between batches — reuses the same id and is itself self-healing.
-        const orphans = await this.coord.runExclusive(async () => {
-            const allIds = await this.store.getAllChunkIds();
-            const referenced = new Set<string>();
-            for (const rec of await this.store.listFileRecords()) {
-                for (const id of rec.chunk_ids) referenced.add(id);
-            }
-            return findOrphanChunkIds(allIds, referenced);
-        });
-        if (orphans.length === 0) return { removed: 0, completed: true };
-        const BATCH = 500;
-        let deleted = 0;
-        let completed = true;
-        for (let i = 0; i < orphans.length; i += BATCH) {
-            if (opts.shouldContinue && !opts.shouldContinue()) { completed = false; break; }
-            const batch = orphans.slice(i, i + BATCH);
-            await this.coord.runExclusive(() => this.store.deleteChunksByIds(batch));
-            deleted += batch.length;
-        }
-        if (deleted > 0) {
-            this.invalidateBm25Cache();
-            void this.warmCaches('orphan-sweep');
-        }
-        return { removed: deleted, completed };
+        const o = this;
+        return sweepOrphanChunksCore({ coord: o.coord, store: o.store, invalidateBm25Cache: () => o.invalidateBm25Cache(), warmCaches: t => o.warmCaches(t) }, opts);
     }
 
     // Dead-identity sidecar reap (Phase 3 §4): at a full reindex — which republishes
