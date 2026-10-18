@@ -41,23 +41,10 @@ import {
 import { metaAccepts, readDeviceMeta, type MetaExpectation, type SidecarMeta } from './sidecar-meta';
 import type { ReChunkedNote, HydrateResult } from '../core/sidecar-types';
 export type { ReChunkedNote, HydrateResult } from '../core/sidecar-types';
+import type { HydrateDeps as CoreHydrateDeps } from '../core/sidecar-types';
 
-export interface HydrateDeps {
-    adapter: DataAdapter;
-    indexDir: string;
-    expect: MetaExpectation; // {modelId, chunkerVersion, dim} this consumer can reproduce
-    reChunk: () => Promise<ReChunkedNote[]>; // live vault → re-chunked notes
-    existingIds: () => Promise<Set<string>>; // chunk_ids already in IDB (skip — idempotent)
-    putQuantized: (chunks: Chunk[], tiers: { q: QuantVec; bin: Uint8Array }[]) => Promise<void>;
-    putFileRecord: (rec: { note_path: string; mtimeMs: number; chunk_ids: string[]; contentHash?: string }) => Promise<void>;
-    // Version-gate refusal. Carries the producer meta (null = missing/unreadable)
-    // and this consumer's expectation so the consumer can log WHAT is stale
-    // (e.g. "chunker v3≠v4") and throttle to once per device+reason — a chunker
-    // bump otherwise refuses the same producer on every reconcile / delta flush.
-    onRefusedProducer?: (deviceId: string, meta: SidecarMeta | null, expect: MetaExpectation) => void;
-    log?: (msg: string, detail: unknown) => void;
-    batchSize?: number; // putQuantized batch size (default 500)
-}
+// Generic over the file adapter so core can name it; the plugin's HydrateDeps is this with Obsidian's DataAdapter.
+export type HydrateDeps = CoreHydrateDeps<DataAdapter>;
 
 
 // Epoch (ms) of a producer's last full reindex, for "freshest" selection. A

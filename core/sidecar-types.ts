@@ -1,5 +1,6 @@
 // The two result/input shapes of the sidecar hydrate, split out so core can name them without reaching the plugin's sidecar IO.
 import type { Chunk } from './types.ts';
+import type { QuantVec } from './quant.ts';
 
 // fork 1.1.3 src/sidecar-sync.ts:44 ReChunkedNote
 // One live note re-chunked locally: the liveness oracle's unit.
@@ -109,4 +110,22 @@ export interface MetaExpectation {
     revision: string | null;
     chunkerVersion: number;
     dim: number;
+}
+
+// fork 1.1.3 src/sidecar-sync.ts:51 HydrateDeps (now generic over the file adapter)
+export interface HydrateDeps<A = unknown> {
+    adapter: A;
+    indexDir: string;
+    expect: MetaExpectation; // {modelId, chunkerVersion, dim} this consumer can reproduce
+    reChunk: () => Promise<ReChunkedNote[]>; // live vault → re-chunked notes
+    existingIds: () => Promise<Set<string>>; // chunk_ids already in IDB (skip — idempotent)
+    putQuantized: (chunks: Chunk[], tiers: { q: QuantVec; bin: Uint8Array }[]) => Promise<void>;
+    putFileRecord: (rec: { note_path: string; mtimeMs: number; chunk_ids: string[]; contentHash?: string }) => Promise<void>;
+    // Version-gate refusal. Carries the producer meta (null = missing/unreadable)
+    // and this consumer's expectation so the consumer can log WHAT is stale
+    // (e.g. "chunker v3≠v4") and throttle to once per device+reason — a chunker
+    // bump otherwise refuses the same producer on every reconcile / delta flush.
+    onRefusedProducer?: (deviceId: string, meta: SidecarMeta | null, expect: MetaExpectation) => void;
+    log?: (msg: string, detail: unknown) => void;
+    batchSize?: number; // putQuantized batch size (default 500)
 }
