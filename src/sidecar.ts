@@ -36,6 +36,8 @@ import {
     VEC_BYTES, Q_BYTES, SIGN_BYTES, DIM, SHARD_CAP_BYTES, MAX_VECTORS_PER_SHARD,
     type IndexRecord, type ResolvedEntry, type ResolveResult, type TierBytes, type VectorRecord, type TombstoneRecord,
 } from '../core/format';
+import type { DeviceShard, CompactResult, CoalesceResult } from '../core/sidecar-types';
+export type { DeviceShard, CompactResult, CoalesceResult } from '../core/sidecar-types';
 export * from '../core/format';
 
 export interface ScanResult extends ResolveResult {
@@ -43,11 +45,6 @@ export interface ScanResult extends ResolveResult {
 }
 
 
-export interface DeviceShard {
-    seq: number;
-    path: string;
-    size: number;
-}
 
 function baseName(path: string): string {
     return path.split('/').pop() ?? '';
@@ -551,24 +548,6 @@ export async function deviceShardBytes(adapter: DataAdapter, indexDir: string, d
     return bytes;
 }
 
-export interface CompactResult {
-    compacted: boolean;
-    // why nothing happened (compacted:false), or 'done'. 'incomplete-rechunk' means the
-    // live-id oracle reported a skipped note → unsafe to delete → retry next session.
-    // 'format-mismatch' means the caller detected this device's own on-disk sidecar
-    // predates the current SIDECAR_FORMAT and refused to decode it (see compactOwnSidecar).
-    reason?: 'below-floor' | 'below-ratio' | 'nothing-dead' | 'incomplete-rechunk' | 'format-mismatch' | 'done';
-    recordsBefore: number; // total jsonl record lines before
-    recordsAfter: number;  // live records kept after
-    bytesBefore: number;   // total shard bytes before
-    bytesAfter: number;    // total shard bytes after
-    shed: number;          // own-shard records dropped as unreadable/corrupt (expected 0)
-    // Shard-file counts (post orphan-reclaim / post rewrite). The watch signal for
-    // append-only flush proliferation (1A): if shardsBefore trends high while the
-    // gates keep declining, the compaction trigger needs tightening.
-    shardsBefore: number;
-    shardsAfter: number;
-}
 
 // Compact `deviceId`'s OWN sidecar in place: rewrite its jsonl + shards to hold only
 // its live records, reclaiming the disk that superseded re-appends (same id, newer
@@ -740,19 +719,6 @@ export async function compactDevice(
     });
 }
 
-export interface CoalesceResult {
-    coalesced: boolean;
-    reason?: 'below-count' | 'done';
-    smallShards: number;  // small shards found (and, on 'done', deleted)
-    shardsBefore: number;
-    shardsAfter: number;
-    bytesMoved: number;   // live bytes copied into dense shards
-    shed: number;         // corrupt/unreadable source records dropped (expected 0)
-    // Torn/unparseable jsonl lines the rewrite dropped (expected 0). Surfaced
-    // because the swap permanently removes them: the caller should log the
-    // breadcrumb before the on-disk evidence is gone.
-    skippedLines: number;
-}
 
 // Shard-count hygiene for the append-only writer (1A): fold accumulated SMALL
 // shards — bulkAppend leaves one per flush — into dense fresh shard(s). This is

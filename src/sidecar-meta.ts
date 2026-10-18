@@ -8,40 +8,10 @@
 import type { DataAdapter } from 'obsidian';
 import { metaPathFor, SIDECAR_FORMAT, withDirLock, writeTextAtomic } from './sidecar';
 import { pluginIdentity, type IndexIdentity } from './identity';
+import type { SidecarMeta, MetaExpectation } from '../core/sidecar-types';
+export type { SidecarMeta, MetaExpectation } from '../core/sidecar-types';
 
-export interface SidecarMeta {
-    format: number; // SIDECAR_FORMAT at write time
-    modelId: string; // embedding model id (ml97)
-    revision: string | null; // pinned model commit sha (or null = track main) — F10 gate
-    chunkerVersion: number; // CHUNKER_VERSION at write time
-    dim: number; // embedding dimension (384)
-    deviceId: string;
-    lastFullReindex: string | null; // ISO timestamp, informational
-    // Corpus dense-cosine background (dense-stats.ts), so a hydrate-only device
-    // (iOS that never runs a full reindex) inherits the producer's display
-    // calibration instead of showing none. Optional + ignored by the version gate
-    // (metaAccepts) — a producer that predates these fields just yields no
-    // confidence on the consumer until someone full-reindexes.
-    bgMean?: number;
-    bgStd?: number;
-    // Monotone shard-seq allocation floor, owned by sidecar.ts (raiseSeqFloorRaw):
-    // raised whenever a max-seq shard is deleted with no higher seq left on disk
-    // (crash-orphan reclaim, compact-to-empty, pre-rebuild clearDevice), so a
-    // retired embeddings.<dev>.<seq>.bin filename is never republished with
-    // different bytes — a peer may still hold the old file, and iCloud offers no
-    // cross-file ordering, so a reused name would let fresh jsonl refs resolve
-    // against stale bytes (records carry no id binding; the CRC passes). Optional
-    // + ignored by metaAccepts. Most meta writers don't know it, so writeDeviceMeta
-    // preserves the on-disk value unless the caller sets it explicitly.
-    seqFloor?: number;
-}
 
-export interface MetaExpectation {
-    modelId: string;
-    revision: string | null;
-    chunkerVersion: number;
-    dim: number;
-}
 
 export async function readDeviceMeta(adapter: DataAdapter, indexDir: string, deviceId: string): Promise<SidecarMeta | null> {
     const path = metaPathFor(indexDir, deviceId);
