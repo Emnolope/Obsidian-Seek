@@ -50,6 +50,7 @@ import { applyDelta as applyDeltaCore } from '../core/apply-delta';
 import { reconcileIdentityInPlace } from '../core/reconcile';
 import { dedupViaSidecar as dedupViaSidecarCore, carryOverHydrate as carryOverHydrateCore } from '../core/hydrate-before-embed';
 import { harvestCarryOverInto as harvestCarryOverIntoCore, reconcileGhostDirt as reconcileGhostDirtCore, deltaFallback as deltaFallbackCore, exportMcpAfterSuccessfulCommit as exportMcpAfterSuccessfulCommitCore } from '../core/delta-tail';
+import { reindexAll as reindexAllCore } from '../core/reindex-all';
 import { reindexDelta as reindexDeltaCore } from '../core/reindex-delta';
 import { flushSidecarAfterPass as flushSidecarAfterPassCore, runSidecarFlush as runSidecarFlushCore } from '../core/sidecar-flush';
 import { shouldIndexPath as shouldIndexPathCore, chunksFor as chunksForCore, computeDelta, UnreadableQuarantine } from '../core/delta';
@@ -245,35 +246,16 @@ export class SearchOrchestrator {
         return exportMcpAfterSuccessfulCommitCore({ exportMcpIndex: () => exportMcpIndex(this.app.vault.adapter, this.store), forensics: this.forensics, logger: this.logger }, mode);
     }
 
-    // Full reindex. Drops the database, walks all markdown, re-embeds everything.
-    // Serialized against deltas via the write mutex (a delta mid-nuke would throw).
     async reindexAll(onProgress?: (msg: string) => void, opts: { shouldContinue?: () => boolean; isPaused?: () => boolean } = {}): Promise<IndexCompleteEntry> {
-        let result: IndexCompleteEntry;
-        try {
-            const inner = await this.coord.runExclusive(() => this.reindexAllInner(onProgress, opts.shouldContinue, opts.isPaused));
-            result = inner.entry;
-            // 1C: the pass only PACKAGED its sidecar flush; run it now that the
-            // mutex has released, still awaited so "reindexAll resolved ⇒ sidecar
-            // flushed" holds for every caller.
-            await this.flushSidecarAfterPass(inner.sidecarJob);
-            await this.exportMcpAfterSuccessfulCommit('full');
-        } catch (e) {
-            // Pass-level quota (S2): the per-file classifier only sees commitFile's
-            // catch; on a truly full disk the pass's OWN writes (the post-nuke
-            // setMeta, the end-of-pass meta stamp) can quota-throw too — the
-            // highest-stakes case, since the nuke already dropped the previous
-            // index. Surface the same actionable signal, then rethrow: the pass
-            // still failed and the caller's generic handler still reports it.
-            if (isQuotaError(e)) {
-                this.forensics?.beat('index-quota-exhausted', { files: 0, mode: 'full-pass-write' });
-                this.quotaToast();
-            }
-            throw e;
-        }
-        // Off the mutex: re-warm reads the committed index; a search arriving
-        // first just does the same build itself (see warmCaches).
-        void this.warmCaches('full-reindex');
-        return result;
+        const o = this;
+        return reindexAllCore<TFile>({
+            coord: o.coord, store: o.store, embedder: o.embedder, logger: o.logger, forensics: o.forensics, unreadable: o.unreadable,
+            EMBEDDING_DIM, nukeDatabase, indexableFiles: () => liveOf(o.indexableFiles()), shouldIndex: p => o.shouldIndex(p),
+            emitProgress: (...a) => o.emitProgress(...a),
+            embedAndCommitFiles: (fs, ...rest) => o.embedAndCommitFiles(fs.map(f => f.handle), ...rest),
+            invalidateBm25Cache: () => o.invalidateBm25Cache(), flushSidecarAfterPass: j => o.flushSidecarAfterPass(j),
+            exportMcpAfterSuccessfulCommit: mode => o.exportMcpAfterSuccessfulCommit(mode), quotaToast: () => o.quotaToast(), warmCaches: t => o.warmCaches(t),
+        }, onProgress, opts);
     }
 
     // Rate-limited (5 min) storage-full toast — catch-up bursts re-trip the quota
@@ -334,80 +316,6 @@ export class SearchOrchestrator {
         }, job);
     }
 
-    private async reindexAllInner(onProgress?: (msg: string) => void, shouldContinue?: () => boolean, isPaused?: () => boolean): Promise<{ entry: IndexCompleteEntry; sidecarJob: SidecarFlushJob | null }> {
-        const overallStart = performance.now();
-        const memBefore = await snapshotMemory();
-
-        // A full reindex re-attempts every file regardless of quarantine — clear
-        // the backoff map so a file that has since become readable (e.g. an
-        // iCloud placeholder that finished downloading) isn't skipped here too.
-        this.unreadable.clear();
-
-        // Reset. Close our long-lived connection first so deleteDatabase
-        // isn't blocked by us, then re-open the (fresh, empty) DB.
-        const resetStart = performance.now();
-        this.store.close();
-        const pre = await nukeDatabase(this.store.dbName);   // per-vault DB — never another vault's
-        await this.store.open();   // scope-less: reuses the name from onload's open(appId)
-        await this.store.setMeta({
-            embeddingDim: EMBEDDING_DIM,
-            lastIndexedAt: null,
-            schemaVersion: META_SCHEMA_VERSION,
-            modelId: this.embedder.modelId,
-        });
-        const resetEntry: ResetEntry = {
-            type: 'reset',
-            timestamp: new Date().toISOString(),
-            droppedDatabase: this.store.dbName,
-            chunksDeleted: pre.chunks,
-            vectorsDeleted: pre.embeddings,
-            durationMs: parseFloat((performance.now() - resetStart).toFixed(2)),
-            pass: true,
-            checks: [
-                `✅ dropped database "${this.store.dbName}"`,
-                `ℹ️ removed ${pre.chunks} chunks, ${pre.embeddings} vectors, ${pre.files} file records`,
-            ],
-        };
-        await this.logger.append(resetEntry);
-
-        // Scan. Filter out (a) Seek's own diagnostic outputs / machine-generated
-        // chatter (see EXCLUDED_PATHS) and (b) anything the user has hidden via
-        // Obsidian's "Excluded files" setting (see isUserIgnored).
-        const allFiles = this.indexableFiles();
-        const skipped: string[] = [];
-        const files = allFiles.filter(f => {
-            const include = this.shouldIndex(f.path);
-            if (!include) skipped.push(f.path);
-            return include;
-        });
-        if (skipped.length > 0) {
-            /* intentionally empty: skipped paths are collected above for the
-               filter's side effect; no per-run action is taken on them here */
-        }
-        // Progressive ordering: index most-recently-modified files first. Since
-        // search rebuilds BM25 in-memory and dense reads commit per file, the
-        // index is queryable as it fills — recency-first means the notes a user
-        // is most likely to search are searchable soonest, and on a phone that
-        // may never finish a full pass, recency decides COVERAGE, not just order.
-        files.sort((a, b) => b.stat.mtime - a.stat.mtime);
-        await this.emitProgress('scan', 0, files.length, 0, performance.now() - overallStart);
-
-        // shouldContinue in full mode = the soft preempt (pause/resume between
-        // files while the user searches — see embedAndCommitFiles' budget comment).
-        // The engine's sidecar flush comes back PACKAGED (1C) and rides through to
-        // reindexAll, which runs it after the mutex releases.
-        const result = await this.embedAndCommitFiles(files, 'full', onProgress, overallStart, memBefore, { shouldContinue, isPaused });
-
-        // Bump dataGeneration on COMPLETION. main.ts invalidates once BEFORE the
-        // reindex, but a search firing during the rebuild then caches the frame /
-        // binary index at that generation off the PARTIALLY-filled store; nothing
-        // bumped again at the end, so a post-reindex search kept serving that
-        // frozen partial frame (the frame + binary caches are generation-keyed
-        // only — no chunk-count belt-and-braces like BM25 has). Invalidating here
-        // forces the next search to rebuild against the complete index.
-        this.invalidateBm25Cache();
-        return result;
-    }
 
     private async embedAndCommitFiles(
         files: TFile[],
