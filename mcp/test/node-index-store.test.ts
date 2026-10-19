@@ -44,3 +44,24 @@ test('getMeta fabricates a default on an empty store; setMeta sticks; putBatch d
   assert.equal(vecs[0].q[2], 127);
   await assert.rejects(s.putBatch([chunk('d', 'm.md')], []), /length mismatch/);
 });
+
+test('a snapshot in the state dir survives a restart (and is not the vault)', async () => {
+  const { mkdtemp } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { nodeFileAdapter } = await import('../src/node-file-adapter.ts');
+  const dir = await mkdtemp(join(tmpdir(), 'seek-state-'));
+  const a = new NodeIndexStore('seek-index:vault1', nodeFileAdapter(dir));
+  await a.open();
+  await a.putBatchQuantized([chunk('a', 'n.md')], [tier(3)], { note_path: 'n.md', mtimeMs: 7, chunk_ids: ['a'] } as any);
+  await a.setMeta({ embeddingDim: 384, lastIndexedAt: 'kept', schemaVersion: 2 } as any);
+  a.close();
+  await new Promise(r => setTimeout(r, 50));
+  const b = new NodeIndexStore('seek-index:vault1', nodeFileAdapter(dir));
+  await b.open();
+  assert.deepEqual(await b.count(), { chunks: 1, embeddings: 1, binary: 1, files: 1 });
+  assert.equal((await b.getMeta()).lastIndexedAt, 'kept');
+  const t = (await b.getTiersByIds(['a']))[0]!;
+  assert.equal(t.q.q[3], 127);
+  assert.equal(t.chunk.content, 'body a');
+});
