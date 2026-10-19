@@ -31,6 +31,7 @@ import { sizeOfRow, type SizingRule, type StoreSizeRow } from './index-size';
 import { ACTIVE_MODEL_SPEC } from './model-registry';
 import { META_SCHEMA_VERSION, STORE_NOT_OPENED, isStoreClosedError, isQuotaError, findOrphanChunkIds, classifyFileDelta, stripContent } from '../core/index-types';
 import type { FileRecord, DeltaDecision, MetaConfig } from '../core/index-types';
+import type { IndexStore as IndexStoreContract } from '../core/index-store';
 export { META_SCHEMA_VERSION, STORE_NOT_OPENED, isStoreClosedError, isQuotaError, findOrphanChunkIds, classifyFileDelta, stripContent } from '../core/index-types';
 export type { FileRecord, DeltaDecision, MetaConfig } from '../core/index-types';
 
@@ -416,7 +417,7 @@ function collectByKeyJump<T>(
 }
 
 
-export class IndexStore {
+export class IndexStore implements IndexStoreContract {
     private db: IDBDatabase | null = null;
     // Resolved per-vault DB name. Set on the first open(scope) — main.ts
     // passes the vault's appId at onload — and reused by every later
