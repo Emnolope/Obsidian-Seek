@@ -2,13 +2,13 @@
 // embedder.ts, and iframe-runner.ts. Keep this file easy to compare against
 // those upstream blocks; MCP transport belongs elsewhere.
 
-import { EMBEDDING_DIM } from '../../core/contract.ts';
+import { ACTIVE_MODEL_SPEC } from '../../core/model-registry.ts';
 
 export const SEEK_MODEL = {
-  repo: 'tooape/granite-embedding-97m-multilingual-r2-GBQ4-ONNX',
-  revision: '54db88c5667bd79b4aea24ea6027a7ef45a7bbb5',
-  dimension: EMBEDDING_DIM,
-  dtype: 'q4' as const,
+  repo: ACTIVE_MODEL_SPEC.repo,
+  revision: ACTIVE_MODEL_SPEC.revision,
+  dimension: ACTIVE_MODEL_SPEC.dim,
+  dtype: ACTIVE_MODEL_SPEC.dtype,
   pooling: 'cls' as const,
   normalize: true,
   maxLength: 128,

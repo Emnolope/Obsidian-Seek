@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
 import { once } from 'node:events';
-import { buildChildScript } from '../vendor/seek/src/iframe-runner.ts';
+import { buildChildScript } from '../../core/child-script.ts';
 
 type CdpResponse = { id?: number; result?: any; error?: { message?: string } };
 

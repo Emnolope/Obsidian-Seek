@@ -11,10 +11,8 @@ compatibility review must compare those revisions before changing format code.
 | `src/sidecar.ts` constants and codec | `src/sidecar.ts` | Same format-3 dimensions, record layout, CRC, and offset rules. |
 | `src/sidecar.ts` locator scanning | `src/sidecar.ts` | Same winner ordering, adapted from Obsidian/DataAdapter reads to Node filesystem reads. |
 | `src/sidecar.ts` record reads | `src/sidecar.ts` | Same shard naming and range validation, adapted to Node buffers. |
-| `src/model-registry.ts` | `vendor/seek/src/model-registry.ts` | Vendored snapshot at the pinned compatibility commit. |
-| `src/embedder.ts` | `vendor/seek/src/embedder.ts` | Vendored snapshot at the pinned compatibility commit. |
-| `src/iframe-runner.ts` | `vendor/seek/src/iframe-runner.ts` | Vendored snapshot containing Seek's browser embedding path. |
-| `src/types.ts` | `vendor/seek/src/types.ts` | Vendored dependency snapshot for embedding compatibility. |
+| `src/model-registry.ts` | `core/model-registry.ts` | Shared core module; the MCP imports it directly. |
+| `src/iframe-runner.ts` (minus the IframeRunner class) | `core/child-script.ts` | Shared core module; the MCP imports `buildChildScript` directly. |
 | `src/index-store.ts` read APIs | `/workspaces/Obsidian-Seek/src/mcp-export.ts` | Plugin-side exporter that joins document data to chunk IDs. |
 
 The MCP transport, vault-location resolver, document manifest contract, loader

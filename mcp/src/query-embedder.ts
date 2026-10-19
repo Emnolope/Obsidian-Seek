@@ -1,15 +1,7 @@
 import { prepareVector, requestedDevice, SEEK_MODEL, type SeekDevice } from './seek-compatibility.ts';
 import { ChromiumSidecar } from './chromium-sidecar.ts';
 
-// Compatibility boundary: vendor/seek/src/model-registry.ts is retained
-// byte-for-byte, but its Obsidian TypeScript imports are not NodeNext-resolvable.
-// Keep this runtime spec mechanically aligned with Seek's ACTIVE_MODEL_SPEC.
-const ACTIVE_MODEL_SPEC = {
-  repo: SEEK_MODEL.repo,
-  revision: SEEK_MODEL.revision,
-  dim: SEEK_MODEL.dimension,
-  dtype: SEEK_MODEL.dtype,
-};
+import { ACTIVE_MODEL_SPEC } from '../../core/model-registry.ts';
 
 export const QUERY_EMBEDDING_DIM = ACTIVE_MODEL_SPEC.dim;
 

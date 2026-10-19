@@ -13,13 +13,7 @@ is the smallest edit distance from Seek, not the fewest copied lines; copying
 extra upstream functions is good when it preserves source fidelity and makes
 replacement mechanical.
 
-The following files are wholesale vendored snapshots from the pinned Seek
-commit `1f0a9b0ce3854f82cc746e02f9cd27bcdbc30acd`:
-
-- `vendor/seek/src/model-registry.ts`
-- `vendor/seek/src/embedder.ts`
-- `vendor/seek/src/iframe-runner.ts`
-- `vendor/seek/src/types.ts`
+The embedder source (model registry, iframe-runner constants and `buildChildScript`) is no longer vendored: the MCP imports it from `core/` (`model-registry.ts`, `child-script.ts`). Only `vendor/seek/runtime` (the bundled transformers.js build) remains vendored.
 
 The vendored snapshots retain their upstream attribution and license notices.
 `src/query-embedder.ts` is an MCP process adapter around the Seek query path;
