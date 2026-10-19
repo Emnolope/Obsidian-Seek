@@ -6,6 +6,7 @@ import { pluginIdentity, type IndexIdentity } from './identity';
 
 export * from '../core/sidecar-meta';
 
+// fork 1.1.3 new; relates to src/sidecar-meta.ts expectationFor (core requires the identity; this wrapper defaults it)
 export function expectationFor(id: IndexIdentity = pluginIdentity()): MetaExpectation {
     return expectationForCore(id);
 }
