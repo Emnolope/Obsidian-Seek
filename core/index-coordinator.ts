@@ -40,10 +40,13 @@ export class IndexCoordinator {
     // plugin couldn't resolve its manifest dir / in tests. settings is the LIVE
     // reference the plugin mutates in place, so sidecarOn() always reads current
     // values without a re-wire.
-    constructor(
-        private indexDir: string | null,
-        private settings: SeekSettings,
-    ) {}
+    // Explicit fields, not constructor parameter properties: the MCP loads core/ under node's strip-only TS.
+    private indexDir: string | null;
+    private settings: SeekSettings;
+    constructor(indexDir: string | null, settings: SeekSettings) {
+        this.indexDir = indexDir;
+        this.settings = settings;
+    }
 
     // Cache generation. Reads are cheap; the only mutation is bumpGeneration().
     get generation(): number {

@@ -17,6 +17,7 @@ const unb64 = <T extends Int8Array | Uint8Array>(s: string, C: { new (b: ArrayBu
 
 export class NodeIndexStore implements IndexStore {
     private cfg: MetaConfig | null = null;
+    private bm25: { json: string; stamp: unknown } | null = null;
     private metas = new Map<string, ChunkMeta>();
     private bodies = new Map<string, string>();
     private embs = new Map<string, QuantVec>();
@@ -39,6 +40,7 @@ export class NodeIndexStore implements IndexStore {
         try {
             const j = JSON.parse(await this.state.read(this.snapPath));
             this.cfg = j.cfg;
+            this.bm25 = j.bm25 ?? null;
             for (const m of j.metas as ChunkMeta[]) this.metas.set(m.chunk_id, m);
             for (const [id, b] of j.bodies as [string, string][]) this.bodies.set(id, b);
             for (const [id, q, s, bin] of j.tiers as [string, string, number, string][]) {
@@ -63,7 +65,7 @@ export class NodeIndexStore implements IndexStore {
         this.dirty = false;
         const tiers: [string, string, number, string][] = [];
         for (const [id, q] of this.embs) { const bin = this.bins.get(id); if (bin) tiers.push([id, b64(q.q), q.s, b64(bin)]); }
-        const snap = { cfg: this.cfg, metas: [...this.metas.values()], bodies: [...this.bodies], tiers, files: [...this.files.values()] };
+        const snap = { cfg: this.cfg, bm25: this.bm25, metas: [...this.metas.values()], bodies: [...this.bodies], tiers, files: [...this.files.values()] };
         await writeTextAtomic(this.state, this.snapPath, JSON.stringify(snap));
     }
 
@@ -73,6 +75,10 @@ export class NodeIndexStore implements IndexStore {
         return this.cfg ?? { embeddingDim: ACTIVE_MODEL_SPEC.dim, lastIndexedAt: null, schemaVersion: META_SCHEMA_VERSION };
     }
     async setMeta(meta: MetaConfig): Promise<void> { this.cfg = meta; this.touch(); }
+
+    // fork 1.1.3 src/index-store.ts:~630 IndexStore.putBm25 / getBm25
+    async putBm25(json: string, stamp: unknown): Promise<void> { this.bm25 = { json, stamp }; this.touch(); }
+    async getBm25(): Promise<{ json: string; stamp: unknown } | null> { return this.bm25; }
 
     async putBatch(chunks: Chunk[], vectors: Float32Array[]): Promise<void> {
         if (chunks.length === 0) return;
@@ -152,7 +158,7 @@ export class NodeIndexStore implements IndexStore {
     // Full-reindex reset (the IDB side drops the database); no counterpart method upstream.
     async clear(): Promise<{ chunks: number; embeddings: number; binary: number; files: number }> {
         const n = await this.count();
-        this.cfg = null; this.metas.clear(); this.bodies.clear(); this.embs.clear(); this.bins.clear(); this.files.clear();
+        this.cfg = null; this.bm25 = null; this.metas.clear(); this.bodies.clear(); this.embs.clear(); this.bins.clear(); this.files.clear();
         this.touch();
         return n;
     }

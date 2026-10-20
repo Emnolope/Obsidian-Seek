@@ -7,6 +7,7 @@ test('BotEmbedder presents the port core expects over a batch sidecar', async ()
   const e = new BotEmbedder({
     async embedBatch(texts, bucket) { calls.push(`embed:${texts.length}:${bucket}`); return { vectors: texts.map(() => new Float32Array(384)), latencyMs: 9 }; },
     async tokenCounts(texts) { return texts.map(t => t.length); },
+    async loadTokenizer() { calls.push('tok'); },
     async close() { calls.push('close'); },
   });
   assert.equal(e.loaded, true);
@@ -15,6 +16,7 @@ test('BotEmbedder presents the port core expects over a batch sidecar', async ()
   assert.equal(r.vectors.length, 2);
   assert.equal(r.iframeLatencyMs, 9);
   assert.deepEqual(await e.tokenCounts(['abc']), [3]);
+  await e.ensureTokenizer();
   await e.recycle();
-  assert.deepEqual(calls, ['embed:2:64', 'close']);
+  assert.deepEqual(calls, ['embed:2:64', 'tok', 'close']);
 });

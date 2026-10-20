@@ -6,6 +6,7 @@ import { SEEK_MODEL } from './seek-compatibility.ts';
 export interface BatchSidecar {
   embedBatch(texts: string[], bucket?: number): Promise<{ vectors: Float32Array[]; latencyMs: number }>;
   tokenCounts(texts: string[]): Promise<number[]>;
+  loadTokenizer(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -29,6 +30,9 @@ export class BotEmbedder {
 
   // fork 1.1.3 src/embedder.ts:526 LocalEmbedder.tokenCounts
   tokenCounts(texts: string[]): Promise<number[]> { return this.sidecar.tokenCounts(texts); }
+
+  // fork 1.1.3 src/embedder.ts:537 LocalEmbedder.ensureTokenizer
+  ensureTokenizer(): Promise<void> { return this.sidecar.loadTokenizer(); }
 
   // Core calls this after a runtime overflow; the sidecar restarts itself on the next call.
   // fork 1.1.3 src/embedder.ts:459 LocalEmbedder.recycle

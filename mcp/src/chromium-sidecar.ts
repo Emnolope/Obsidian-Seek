@@ -91,8 +91,14 @@ window.__seekEmbedBatch = async (texts, bucket) => {
   const r = await window.__seekRpc('embed-batch', { texts, bucket });
   return JSON.stringify({ vectors: r.vectors.map(toArr), latencyMs: r.latencyMs });
 };
+// Tokenizer only (no model weights): what hydrate needs to reproduce chunk splits. The full model also serves it once loaded.
+window.__seekLoadTokenizer = async () => {
+  if (window.__seekLoaded || window.__seekTokenizer) return;
+  await window.__seekRpc('load-tokenizer', { modelId: 'tooape/granite-embedding-97m-multilingual-r2-GBQ4-ONNX', revision: '54db88c5667bd79b4aea24ea6027a7ef45a7bbb5' });
+  window.__seekTokenizer = true;
+};
 window.__seekTokenCounts = async texts => {
-  await window.__seekEnsure();
+  await window.__seekLoadTokenizer();
   return JSON.stringify(await window.__seekRpc('token-counts', { texts }));
 };
 </script><script type="module">${childScript}</script>`;
@@ -197,6 +203,12 @@ export class ChromiumSidecar {
     const r = JSON.parse(await this.evaluate<string>(`window.__seekEmbedBatch(${JSON.stringify(texts)}, ${JSON.stringify(bucket ?? null)})`)) as { vectors: number[][]; latencyMs: number };
     if (r.vectors.length !== texts.length || !r.vectors.every(v => v.length === 384 && v.every(Number.isFinite))) throw new Error('Chromium returned an invalid embedding batch');
     return { vectors: r.vectors.map(v => Float32Array.from(v)), latencyMs: r.latencyMs };
+  }
+
+  // fork 1.1.3 src/iframe-runner.ts:208 IframeRunner.loadTokenizer
+  async loadTokenizer(): Promise<void> {
+    await this.ready();
+    await this.evaluate<null | boolean>('window.__seekLoadTokenizer().then(() => true)');
   }
 
   // fork 1.1.3 src/iframe-runner.ts:201 IframeRunner.tokenCounts
