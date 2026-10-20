@@ -46,3 +46,14 @@ Every lifted function needs a `// fork <tag> src/FILE.ts:LINE Class.method` poin
 - Commit trailers: Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com> and the Claude-Session line from the system reminder. Work on branches, not main.
 - Seek-derived code keeps upstream attribution (NOTICE.md).
 - A stop hook may report "unpushed commits, no remote branch"; check `git ls-remote --heads origin monorepo-core` before believing it.
+
+## Decisions and how to work (added 2026-10-20)
+- Goal: one codebase, two interfaces (human = Obsidian plugin, bot = MCP on Termux). "If the human has an ability, the bot must have it, and the reverse." Placement first (right function, file, name); unit tests come after, per his methodology. The current code is "the blueprint".
+- Mirror means the same CONTRACT and method names (`core/index-store.ts`, BotHost mirrors SearchOrchestrator), not the same bytes or directories. He said exact parity of storage is "too far" and left the choice to me.
+- The bot's IndexedDB-equivalent is `NodeIndexStore`: memory plus a snapshot in the MCP's own state dir (`$SEEK_MCP_STATE`, else `$XDG_STATE_HOME/seek-mcp/`, else `~/.local/state/seek-mcp/`, plus a vault-path hash). Never inside the vault. Device id `bot-xxxxxxxx` lives there too. The sidecar (`.obsidian/plugins/seek/index`) is the shared human-bot interface ("SaaI").
+- Provenance: keep the `// fork 1.1.3 src/FILE.ts:LINE Name` pointers on moved/new functions (see PROVENANCE.md). He decided against pointer stubs in `src/` that point back to core; the PROVENANCE.md lookup is enough. Never rename or refactor a moved function or field; move verbatim with substitutions only, and verify with a normalized diff against `git show HEAD:src/search.ts`.
+- Core constraints: no obsidian/DOM/Node imports, explicit `.ts` import suffixes, no constructor parameter properties (the MCP loads core under node strip-only TS).
+- Ask him before: any on-disk format change, or anything that removes behavior (prefer opt-in flags).
+- Working style: casual, profane, wants results, no self-flagellation after a mistake. Free plan, so commit and push after each step and keep reads small. Always `git checkout main.js` after building. Run `git fetch origin monorepo-core` before pushing; the "repository moved" warning is harmless. Don't claim "typechecks clean" without `npm run typecheck`.
+- The Syncthing analysis (candidate causes for hydrate being ignored on the phone, ~7h re-embed) lives only in the earlier transcript: /root/.claude/projects/-home-claude/726eaa38-77bc-5b1f-8c85-1f80eb02b41b.jsonl (if the container still exists). Needs the phone's seek-log-<deviceId>.ndjson lines: sidecar-hydrate, version-gate-refused, tokenBudget.
+- The sandbox cannot reach jsdelivr or Hugging Face (403), so the embed path can only be exercised on the user's phone: `SEEK_CHROMIUM_PATH=$(which chromium) node --experimental-strip-types mcp/device-tests/embed-smoke.ts`.
