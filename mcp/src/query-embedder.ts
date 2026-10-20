@@ -64,7 +64,7 @@ async function loadRuntime(): Promise<SeekWebRuntime> {
 
 export class SeekQueryEmbedder {
   private pipelinePromise: Promise<FeatureExtractor> | null = null;
-  private chromium = new ChromiumSidecar();
+  readonly chromium = new ChromiumSidecar();
 
   private load(): Promise<FeatureExtractor> {
     if (!this.pipelinePromise) {
