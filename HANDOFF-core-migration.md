@@ -31,7 +31,7 @@
 - In runSearch, the BM25 index handle is captured once after prepareBm25 (the original re-read the live field at the end). Differs only if the cache is invalidated mid-search.
 
 ## Next work
-1. DONE: MCP write tools `index_vault`, `index_delta`, `hydrate_sidecar`, `compact_sidecar` (mcp/src/bot-session.ts, server.ts). STILL TODO: search/fetch still read the export snapshot, not the bot's live store, so a bot write is not searchable until the read side is pointed at ResidentIndex over the NodeIndexStore; CLI has no write commands yet.
+1. DONE: MCP write tools `index_vault`, `index_delta`, `hydrate_sidecar`, `compact_sidecar` (mcp/src/bot-session.ts, server.ts). DONE (2026-10-20): read side. `BotHost.search/searchHost/searchDense` (runSearch over ResidentIndex + NodeIndexStore), `BotReader` (mcp/src/bot-reader.ts) shapes hits like SeekIndex, `BotEmbedder.embed` is the query path. server.ts uses the bot's store once it has chunks, else the export snapshot (nothing removed); a text+queryVector call still goes to the snapshot because only it can override the embedder. STILL TODO: CLI has no write or live-store read commands yet (cli.ts still reads the snapshot); `index_status` from the live store reports `source: 'bot-store'`, a different shape from the snapshot's.
 2. Syncthing hydration bug: needs the phone's `seek-log-<deviceId>.ndjson` lines (sidecar-hydrate, version-gate-refused, tokenBudget). Repro on Node with late/out-of-order shards and `.syncthing.*.tmp` files. Ask before any on-disk format change.
 3. Run embed-smoke on the phone; fix PARITY.md (stale); MCP docs still describe the two-repo layout; plugin exporter path (item D).
 4. Unit tests after placement is done (his methodology).

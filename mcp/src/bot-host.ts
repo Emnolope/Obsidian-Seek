@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import type { FileAdapter } from '../../core/file-adapter.ts';
 import { IndexCoordinator } from '../../core/index-coordinator.ts';
 import { ResidentIndex, type ResidentPorts } from '../../core/resident-index.ts';
+import { runSearch, runDenseSearch, type SearchHost, type SearchOverride, type ExperimentOverride } from '../../core/engine.ts';
+import { binaryCandidates } from '../../core/binary.ts';
 import { MarkdownChunker } from '../../core/chunker.ts';
 import { chunksFor as chunksForCore, computeDelta, shouldIndexPath as shouldIndexPathCore, UnreadableQuarantine, type LiveFile } from '../../core/delta.ts';
 import { planFileDiff } from '../../core/file-diff.ts';
@@ -42,7 +44,7 @@ import { pluginIdentity, identityHealEligibility } from '../../core/identity.ts'
 import { selectIndexBucket } from '../../core/child-script.ts';
 import { SIDECAR_FORMAT } from '../../core/contract.ts';
 import { ACTIVE_MODEL_SPEC } from '../../core/model-registry.ts';
-import type { Chunk, ChunkMeta, SeekSettings } from '../../core/types.ts';
+import type { Chunk, ChunkMeta, FilterContext, ScoredChunk, SearchEntry, SeekSettings } from '../../core/types.ts';
 import type { QuantVec } from '../../core/quant.ts';
 import type { IndexCompleteEntry, IndexProgressEntry, MemorySnapshot } from '../../core/types.ts';
 import type { BotEmbedder } from './bot-embedder.ts';
@@ -67,6 +69,7 @@ export interface BotHostInit {
   embedder: BotEmbedder;
   logger: Logger;
   settings: SeekSettings;
+  numericKeys?: Set<string>; // Obsidian's declared Number props (.obsidian/types.json); the bot has no property registry
 }
 
 // mtime is a live getter: a pass records the mtime as of the moment it READS the file.
@@ -80,6 +83,7 @@ export class BotHost {
   private embedder: BotEmbedder;
   private logger: Logger;
   private settings: SeekSettings;
+  private numericKeys: Set<string>;
   private forensics = null;
   private chunker = new MarkdownChunker();
   private coord: IndexCoordinator;
@@ -98,7 +102,7 @@ export class BotHost {
 
   constructor(init: BotHostInit) {
     this.vaultDir = init.vaultDir; this.vault = init.vault; this.stateDir = init.stateDir; this.store = init.store;
-    this.embedder = init.embedder; this.logger = init.logger; this.settings = init.settings;
+    this.embedder = init.embedder; this.logger = init.logger; this.settings = init.settings; this.numericKeys = init.numericKeys ?? new Set();
     this.coord = new IndexCoordinator('.obsidian/plugins/seek/index', init.settings);
     this.res = new ResidentIndex(this.residentPorts());
   }
@@ -131,6 +135,60 @@ export class BotHost {
   private quotaToast(): void { console.warn('[seek] device storage is full — some notes could not be indexed'); }
   private quarantineUnreadable(path: string): void {
     if (this.unreadable.add(path)) console.warn(`[seek] quarantining persistently unreadable file (will retry on backoff / next full reindex): ${path}`);
+  }
+
+  // fork 1.1.3 src/search.ts:3268 SearchOrchestrator.buildFilterContext
+  private buildFilterContext(override?: SearchOverride): FilterContext {
+    const epsilon = override?.epsilon ?? this.settings.recencyEpsilon;
+    return {
+      dateField: epsilon > 0 ? { key: this.settings.recencyKey, createdProp: this.settings.createdProp } : null,
+      numericKeys: this.numericKeys,
+    };
+  }
+
+  // fork 1.1.3 src/search.ts:3307 SearchOrchestrator.search
+  async search(query: string, topK = 10, override?: SearchOverride, expOverride?: ExperimentOverride): Promise<{ results: ScoredChunk[]; entry: SearchEntry }> {
+    return runSearch(this.searchHost(), query, topK, override, expOverride);
+  }
+
+  // fork 1.1.3 new; relates to src/search.ts:3307 SearchOrchestrator.search (vector-only callers: no text to fuse, so exact cosine)
+  searchDense(vector: Float32Array, topK: number, pathPrefix?: string): Promise<ScoredChunk[]> {
+    return runDenseSearch(this.searchHost(), vector, topK, pathPrefix);
+  }
+
+  // fork 1.1.3 new; relates to src/search.ts:3307 SearchOrchestrator.search (the plugin's searchHost() is the same list of ports over its own store)
+  private searchHost(): SearchHost {
+    const o = this;
+    return {
+      get settings() { return o.settings; },
+      filterCtx: ov => o.buildFilterContext(ov),
+      frame: async () => {
+        const wasCached = !!(o.res.frameCache && o.res.frameCache.generation === o.coord.generation);
+        return { frame: await o.res.ensureFrame(), wasCached };
+      },
+      bodies: ids => o.store.getBodiesByIds(ids),
+      bodiesMap: ids => o.store.getBodiesMap(ids),
+      embeddings: ids => o.store.getEmbeddingsByIds(ids),
+      embed: t => o.embedder.embed(t),
+      // No Worker in Node; the scan is the same function the plugin's worker runs.
+      binaryCandidates: async (_gen, q, packed, n, bpv, cap, mask) => binaryCandidates(q, packed, n, bpv, cap, mask),
+      prepareBm25: async chunks => {
+        if (!o.res.bm25CacheValid(chunks)) {
+          await o.res.tryLoadPersistedBm25(chunks);
+          if (!o.res.bm25CacheValid(chunks)) await o.res.tryLoadCrossDeviceBm25(chunks);
+        }
+        return o.res.ensureBm25(chunks);
+      },
+      bm25: () => o.res.bm25Cache,
+      bm25Boosts: () => o.res.bm25FieldBoosts(),
+      synonyms: () => o.res.synonymCache,
+      phraseCache: () => o.res.ensurePhraseCache(),
+      // fork 1.1.3 src/search.ts:2385 SearchOrchestrator.onCoherenceDrift: the plugin's recovery ladder is UI-driven; the bot only drops the suspect caches, and the next search rebuilds.
+      onCoherenceDrift: w => { console.error(`[seek] frame/BM25 drift at ${w}; caches dropped`); o.invalidateBm25Cache(); },
+      bgStats: () => o.res.getDenseBgStats(),
+      log: e => o.logger.append(e),
+      logError: (t, err) => o.logger.appendError(t, err),
+    };
   }
 
   // fork 1.1.3 src/search.ts:344 SearchOrchestrator.reindexAll

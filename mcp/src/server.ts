@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { SeekQueryEmbedder } from './query-embedder.ts';
 import { loadVaultIndex } from './vault.ts';
 import { SeekIndex } from './index.ts';
+import { BotReader } from './bot-reader.ts';
 import { openBotSession, runWrite, type BotSession } from './bot-session.ts';
 
 const queryEmbedder = new SeekQueryEmbedder();
@@ -36,6 +37,27 @@ function getIndex(vaultDir: unknown): Promise<SeekIndex> {
   return index;
 }
 
+async function liveReader(args: any): Promise<BotReader | null> {
+  if (typeof args.vaultDir !== 'string' || !args.vaultDir.trim()) return null;
+  const s = await getSession(args.vaultDir);
+  if ((await s.store.count()).chunks === 0) return null;
+  // A query vector alongside text overrides the embedder, which only the snapshot path supports.
+  if (args.queryVector !== undefined && typeof args.queryText === 'string' && args.queryText.trim()) return null;
+  return s.reader;
+}
+
+async function readFrom(r: BotReader, name: string, args: any): Promise<unknown> {
+  const withVec = args.includeVectors === true;
+  if (name === 'index_status') return r.status();
+  if (name === 'semantic_search') {
+    if (args.queryVector === undefined && typeof args.queryText !== 'string') throw new Error('semantic_search requires queryText or queryVector');
+    return r.search({ text: args.queryText, vector: args.queryVector, topK: args.topK, pathPrefix: args.pathPrefix, includeVectors: withVec });
+  }
+  if (name === 'fetch_chunk') return r.chunk(args.chunkId, withVec);
+  if (name === 'fetch_note') return r.note(args.notePath, withVec);
+  throw new Error(`unknown tool: ${name}`);
+}
+
 async function handle(message: any): Promise<any> {
   if (message.method === 'initialize') return success(message.id, { protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'obsidian-seek-mcp', version: '1.0.0' } });
   if (message.method === 'notifications/initialized') return undefined;
@@ -50,6 +72,9 @@ async function handle(message: any): Promise<any> {
   try {
     const args = message.params?.arguments ?? {};
     if (WRITES.includes(message.params.name)) return success(message.id, result(await runWrite(await getSession(args.vaultDir), message.params.name)));
+    // The bot's own index wins once it has chunks (so what it just indexed is searchable); until then the human's export snapshot answers, as before.
+    const live = await liveReader(args);
+    if (live) return success(message.id, result(await readFrom(live, message.params.name, args)));
     const index = await getIndex(args.vaultDir);
     if (message.params.name === 'semantic_search' && args.queryVector === undefined && typeof args.queryText !== 'string') {
       throw new Error('semantic_search requires queryText or queryVector');

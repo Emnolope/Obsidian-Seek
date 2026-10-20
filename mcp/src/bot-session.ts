@@ -1,14 +1,15 @@
 // Opens one vault for writing: state dir + persisted store + BotHost. Mirrors what the plugin's onload assembles.
 import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { resolveSettings } from '../../core/memory-host.ts';
+import { numericKeysFromTypesJson, resolveSettings } from '../../core/memory-host.ts';
 import { BotHost } from './bot-host.ts';
+import { BotReader } from './bot-reader.ts';
 import { BotEmbedder, type BatchSidecar } from './bot-embedder.ts';
 import { NodeIndexStore } from './node-index-store.ts';
 import { nodeFileAdapter } from './node-file-adapter.ts';
 import { botDeviceId, botLogger, stateDirFor } from './base.ts';
 
-export interface BotSession { host: BotHost; store: NodeIndexStore; deviceId: string }
+export interface BotSession { host: BotHost; store: NodeIndexStore; reader: BotReader; deviceId: string }
 
 export async function openBotSession(vaultDir: string, sidecar: BatchSidecar): Promise<BotSession> {
   const root = resolve(vaultDir);
@@ -19,10 +20,12 @@ export async function openBotSession(vaultDir: string, sidecar: BatchSidecar): P
   const deviceId = await botDeviceId(state);
   let raw: unknown;
   try { raw = JSON.parse(await readFile(join(root, '.obsidian/plugins/seek/data.json'), 'utf8')); } catch { /* defaults */ }
+  let types: unknown;
+  try { types = JSON.parse(await readFile(join(root, '.obsidian/types.json'), 'utf8')); } catch { /* none: no numeric props */ }
   const store = new NodeIndexStore(`seek-index:${deviceId}`, state);
   await store.open();
-  const host = new BotHost({ vaultDir: root, vault, stateDir, store, embedder: new BotEmbedder(sidecar), logger: botLogger(vault, deviceId), settings: resolveSettings(raw) });
-  return { host, store, deviceId };
+  const host = new BotHost({ vaultDir: root, vault, stateDir, store, embedder: new BotEmbedder(sidecar), logger: botLogger(vault, deviceId), settings: resolveSettings(raw), numericKeys: numericKeysFromTypesJson(types) });
+  return { host, store, reader: new BotReader(host, store), deviceId };
 }
 
 // The write verbs the MCP exposes; each is the human command's twin and ends by flushing the local store to disk.

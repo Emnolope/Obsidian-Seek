@@ -27,3 +27,24 @@ test('write verbs run through a session; the store survives reopening from the s
   assert.equal((await again.store.count()).chunks, n);
   assert.equal(again.deviceId, s.deviceId);
 });
+
+test('what the bot indexes is searchable and fetchable from its own store', async () => {
+  process.env.SEEK_MCP_STATE = await mkdtemp(join(tmpdir(), 'seek-st-'));
+  const root = await mkdtemp(join(tmpdir(), 'seek-sv-'));
+  await mkdir(join(root, '.obsidian/plugins/seek'), { recursive: true });
+  await writeFile(join(root, 'a.md'), `# a\n\n${'alpha text here '.repeat(40)}\n`);
+  const s = await openBotSession(root, sidecar);
+  await runWrite(s, 'index_vault');
+  const hits = await s.reader.search({ text: 'alpha text', topK: 3 });
+  assert.equal(hits[0]?.notePath, 'a.md');
+  assert.ok(hits[0].content.includes('alpha'));
+  assert.equal(hits[0].vector, undefined);
+  assert.equal((await s.reader.search({ text: 'alpha', includeVectors: true }))[0].vector?.length, 384);
+  assert.equal((await s.reader.chunk(hits[0].chunkId)).notePath, 'a.md');
+  assert.ok((await s.reader.note('a.md')).length >= 1);
+  assert.deepEqual(await s.reader.note('nope.md'), []);
+  assert.equal((await s.reader.search({ vector: new Array(384).fill(0).map((_, i) => (i === 0 ? 1 : 0)), topK: 1 })).length, 1);
+  await writeFile(join(root, 'b.md'), `# b\n\n${'zebra stripes here '.repeat(40)}\n`);
+  await runWrite(s, 'index_delta');
+  assert.equal((await s.reader.search({ text: 'zebra stripes' }))[0].notePath, 'b.md');
+});
