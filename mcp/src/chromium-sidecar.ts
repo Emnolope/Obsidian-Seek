@@ -66,22 +66,34 @@ window.__seekRpc = (type, payload) => new Promise((resolve, reject) => {
   window.__seekPending.set(id, { resolve, reject });
   window.postMessage({ id, type, payload }, '*');
 });
-window.__seekEmbed = async text => {
+window.__seekEnsure = async () => {
   if (!window.__seekReady) throw new Error('browser runtime is not ready');
-  if (!window.__seekLoaded) {
-    const result = await window.__seekRpc('load', {
-      modelId: 'tooape/granite-embedding-97m-multilingual-r2-GBQ4-ONNX',
-      device: 'wasm', dtype: 'q4', skipWarmup: true,
-      revision: '54db88c5667bd79b4aea24ea6027a7ef45a7bbb5'
-    });
-    if (result && result.error) throw new Error(String(result.error));
-    window.__seekLoaded = true;
-  }
+  if (window.__seekLoaded) return;
+  const result = await window.__seekRpc('load', {
+    modelId: 'tooape/granite-embedding-97m-multilingual-r2-GBQ4-ONNX',
+    device: 'wasm', dtype: 'q4', skipWarmup: true,
+    revision: '54db88c5667bd79b4aea24ea6027a7ef45a7bbb5'
+  });
+  if (result && result.error) throw new Error(String(result.error));
+  window.__seekLoaded = true;
+};
+const toArr = v => Array.isArray(v) ? v : (v && typeof v.length === 'number' ? Array.from(v) : null);
+window.__seekEmbed = async text => {
+  await window.__seekEnsure();
   const result = await window.__seekRpc('embed', { text });
-  const vector = result && typeof result === 'object' ? result.vector : null;
-  const raw = Array.isArray(vector) ? vector : (vector && typeof vector.length === 'number' ? Array.from(vector) : null);
+  const raw = toArr(result && typeof result === 'object' ? result.vector : null);
   if (!raw || raw.length !== 384) throw new Error('browser returned an invalid embedding vector');
   return JSON.stringify(raw);
+};
+// Index path: same RPCs the plugin's IframeRunner sends. Typed arrays don't survive returnByValue, so ship JSON.
+window.__seekEmbedBatch = async (texts, bucket) => {
+  await window.__seekEnsure();
+  const r = await window.__seekRpc('embed-batch', { texts, bucket });
+  return JSON.stringify({ vectors: r.vectors.map(toArr), latencyMs: r.latencyMs });
+};
+window.__seekTokenCounts = async texts => {
+  await window.__seekEnsure();
+  return JSON.stringify(await window.__seekRpc('token-counts', { texts }));
 };
 </script><script type="module">${childScript}</script>`;
 
@@ -172,6 +184,25 @@ export class ChromiumSidecar {
       throw new Error('Chromium returned an invalid 384-value embedding vector');
     }
     return Float32Array.from(vector);
+  }
+
+  private async ready(): Promise<void> {
+    if (this.browser) return;
+    try { await this.start(); } catch (error) { await this.close(); throw error; }
+  }
+
+  // fork 1.1.3 src/iframe-runner.ts:192 IframeRunner.embedBatch
+  async embedBatch(texts: string[], bucket?: number): Promise<{ vectors: Float32Array[]; latencyMs: number }> {
+    await this.ready();
+    const r = JSON.parse(await this.evaluate<string>(`window.__seekEmbedBatch(${JSON.stringify(texts)}, ${JSON.stringify(bucket ?? null)})`)) as { vectors: number[][]; latencyMs: number };
+    if (r.vectors.length !== texts.length || !r.vectors.every(v => v.length === 384 && v.every(Number.isFinite))) throw new Error('Chromium returned an invalid embedding batch');
+    return { vectors: r.vectors.map(v => Float32Array.from(v)), latencyMs: r.latencyMs };
+  }
+
+  // fork 1.1.3 src/iframe-runner.ts:201 IframeRunner.tokenCounts
+  async tokenCounts(texts: string[]): Promise<number[]> {
+    await this.ready();
+    return JSON.parse(await this.evaluate<string>(`window.__seekTokenCounts(${JSON.stringify(texts)})`));
   }
 
   async close(): Promise<void> {
