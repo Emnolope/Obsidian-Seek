@@ -7,11 +7,11 @@
 - LESSON FROM THIS SESSION: items in a handoff (including the "known gaps" in the previous one) are suggestions, not orders. Anything that REMOVES behavior needs his confirmation first. I stripped vectors from MCP output because a gap said to; he wanted them. Prefer opt-in flags over deletion.
 - Never claim "typechecks clean" without running `npm run typecheck` (root tsc + core tsc + the MCP's own tsc). I once ran only part of it and missed a real error.
 
-## State
-- Repo: /home/claude/obsidian-seek (github.com/Emnolope/Obsidian-Seek), branch `monorepo-core`, head 5ed96fc, pushed. Do not re-clone. If missing: add_repo, owner Emnolope, access "push". Run `git fetch origin monorepo-core` before pushing (shallow single-branch clone). The "repository moved" push warning is harmless.
-- Emnolope/Obsidian-Seek-MCP: README now points to the consolidated repo (main 50eb5e8). Otherwise untouched.
-- Verified at 5ed96fc: `npm run typecheck`, 1173 plugin tests, 5 MCP tests, plugin + MCP builds.
-- NOT verified: Chromium/Termux text-to-vector path; loading the built plugin in Obsidian; release.yml/ci.yml (never run); a real plugin export at schema v2 read by the MCP against a real vault.
+## State (updated 2026-10-19, head 23d79f8, branch monorepo-core, pushed)
+- Verified: `npm run typecheck`, 1266 plugin tests, 17 MCP tests, both builds. Never run: real Obsidian, phone, release.yml, Chromium/Termux embed (use `mcp/device-tests/embed-smoke.ts`).
+- Whole writer half of SearchOrchestrator, sidecar cluster, identity, model-registry, IndexStore contract (`core/index-store.ts`), `core/child-script.ts` are in core. `mcp/vendor/seek/src` is gone.
+- Bot host: `mcp/src/bot-host.ts` (BotHost = Node twin of SearchOrchestrator), `node-index-store.ts` (memory + snapshot in the MCP state dir, never the vault), `node-file-adapter.ts`, `bot-embedder.ts`, `base.ts` (state dir, `bot-xxxxxxxx` device id, vault lister, logger). Tests: `mcp/test/bot-host.test.ts` (index, delta, cross-bot hydrate with zero embeds).
+- Parity gaps: `.base` files not indexed by the bot (needs a YAML parser); link dictionary is a no-op on the bot.
 
 ## Architecture (his metaphor: one program, three layers)
 - BASE differs per environment (Obsidian vs terminal/Node/Termux). MIDDLE (core/) is identical and written once. TOP differs (Obsidian UI vs MCP tools).
@@ -30,13 +30,11 @@
 - Hybrid `pathPrefix` filters after ranking (over-fetch 100). Vector-only applies it before ranking.
 - In runSearch, the BM25 index handle is captured once after prepareBm25 (the original re-read the live field at the end). Differs only if the cache is invalidated mid-search.
 
-## Next work (ask him which first)
-A. (PARTLY DONE) SearchOrchestrator indexing/delta/reindex logic behind ports. Done and in core/: delta.ts (computeDelta, rules, chunksFor), file-diff.ts, apply-delta.ts, embed-commit.ts (whole write pass), index-types.ts. Remaining in src/search.ts: reindexAll/reindexAllInner, reindexDelta, reconcileIdentityInPlace, sweepOrphanChunks, compaction, sidecar hydrate/dedup/carry-over, emitProgress. (ensureFrame/ensureBinaryIndex and all other cache methods are now DONE: `core/resident-index.ts` `ResidentIndex`, ports in `residentPorts()` in src/search.ts; src/search.ts keeps one-line proxies.) The plugin side supplies each port via `embedCommitCtx()`, `searchHost()`, and inline ctx objects. This is what gives the MCP WRITE access to the index; he wants human and bot both able to read and write. The on-disk format is the shared contract, so ASK before changing it.
-B. Sidecar hydration, BM25 persistence (tryLoadPersistedBm25, cross-device), reconcile logic.
-C. Embedder runtime: src/embedder.ts and iframe-runner.ts versus mcp/vendor/seek/src/* (pinned copies with 2-6 lines of drift each). None of the plugin originals import `obsidian`, so the MCP could import them directly. Needs his phone to test.
-D. Plugin exporter always writes `Seek Index/MCP Export` even when the index lives under `.obsidian/plugins/seek/index` (the MCP resolver checks hidden first, then visible).
-E. His original Seek complaints: could not delete vectors held in IndexedDB; desktop-to-mobile sync never worked (built for iCloud/Obsidian Sync; he wants Syncthing).
-F. Housekeeping: mcp/ docs still describe the old two-repo layout and /workspaces/Obsidian-Seek; HANDOFF.md in mcp/ is stale; Obsidian-Seek-MCP repo's fate undecided (now just a pointer).
+## Next work
+1. Step 5: MCP write tools (index, delta, hydrate, compact) over BotHost; server startup loads NodeIndexStore from `stateDirFor(vault)`; search from the live store via ResidentIndex instead of the export snapshot.
+2. Syncthing hydration bug: needs the phone's `seek-log-<deviceId>.ndjson` lines (sidecar-hydrate, version-gate-refused, tokenBudget). Repro on Node with late/out-of-order shards and `.syncthing.*.tmp` files. Ask before any on-disk format change.
+3. Run embed-smoke on the phone; fix PARITY.md (stale); MCP docs still describe the two-repo layout; plugin exporter path (item D).
+4. Unit tests after placement is done (his methodology).
 
 ## Provenance (READ PROVENANCE.md)
 Every lifted function needs a `// fork <tag> src/FILE.ts:LINE Class.method` pointer, pinned to tag line numbers (find them with `git show 1.1.3:src/search.ts | grep -n`). A new file without pointers is unmaintainable for the next upstream merge. Do this in the same commit as the move. Never rename a moved function or field (the grep-by-original-name mapping is the point); rename only with a real reason and say why in the pointer comment.
