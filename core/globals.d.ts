@@ -7,3 +7,10 @@ declare const navigator: { storage?: { estimate(): Promise<{ usage?: number }>; 
 // Structural slice of the DOM Cache API; model-registry's eviction helpers only touch these.
 declare interface CacheStorage { has(name: string): Promise<boolean>; open(name: string): Promise<{ keys(): Promise<{ url: string }[]>; delete(req: { url: string }): Promise<boolean> }> }
 declare function setTimeout(fn: (value: unknown) => void, ms?: number): unknown;
+// gzip.ts: web-standard streams, present in Electron, WKWebView and Node 18+.
+declare class Blob { constructor(parts: unknown[]); stream(): { pipeThrough(t: unknown): unknown } }
+declare type BlobPart = unknown;
+declare class CompressionStream { constructor(format: string) }
+declare class DecompressionStream { constructor(format: string) }
+declare class Response { constructor(body: unknown); arrayBuffer(): Promise<ArrayBuffer>; text(): Promise<string> }
+declare const crypto: { randomUUID?: () => string };
