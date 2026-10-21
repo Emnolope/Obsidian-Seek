@@ -39,7 +39,7 @@ test('vaultFiles lists notes (and bases on request), skips dot-dirs, carries mti
 test('logger appends stamped ndjson rows under the plugin log dir', async () => {
   const root = await mkdtemp(join(tmpdir(), 'seek-log-'));
   const log = botLogger(nodeFileAdapter(root), 'bot-deadbeef');
-  await log.append({ type: 'x', timestamp: 't' });
+  await log.append({ type: 'error', timestamp: 't', context: 'x', message: 'x' } as never);
   const rows = (await readFile(join(root, '.obsidian/plugins/seek/logs/seek-log-bot-deadbeef.ndjson'), 'utf8')).trim().split('\n').map(l => JSON.parse(l));
   assert.equal(rows[0].deviceId, 'bot-deadbeef');
   assert.equal(rows[0].type, 'x');

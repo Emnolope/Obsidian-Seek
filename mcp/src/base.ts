@@ -7,6 +7,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { FileAdapter } from '../../core/file-adapter.ts';
 import type { LiveFile } from '../../core/delta.ts';
+import { SeekLogger, DEVICE_ID_KEY } from '../../core/logger.ts';
 
 // The bot's IndexedDB-equivalent lives here, never in the vault. One dir per vault, like IDB's per-vault scope.
 export function stateDirFor(vaultDir: string, env: Record<string, string | undefined> = process.env): string {
@@ -45,23 +46,9 @@ export async function vaultFiles(root: string, opts: { indexBases?: boolean } = 
 
 export const readVaultFile = (root: string) => (f: LiveFile<string>): Promise<string> => readFile(join(root, f.handle), 'utf8');
 
-// Same stream the plugin's Logger writes (seek-log-<deviceId>.ndjson), so the human's log report sees the bot's passes too.
-export function botLogger(vault: FileAdapter, deviceId: string) {
-    const dir = '.obsidian/plugins/seek/logs';
-    const path = `${dir}/seek-log-${deviceId}.ndjson`;
-    const sessionId = randomBytes(4).toString('hex');
-    let q: Promise<void> = Promise.resolve();
-    const write = (row: object): Promise<void> => {
-        const line = JSON.stringify({ ...row, deviceId, sessionId }) + '\n';
-        q = q.then(async () => { try { if (!(await vault.exists(dir))) await vault.mkdir(dir); await vault.append(path, line); } catch { /* logging never fails a pass */ } });
-        return q;
-    };
-    return {
-        deviceId,
-        append: (entry: object) => write(entry),
-        appendError: (context: string, e: unknown) => {
-            console.error(`[seek] error in "${context}":`, e);
-            return write({ type: 'error', timestamp: new Date().toISOString(), context, message: e instanceof Error ? e.message : String(e) });
-        },
-    };
+// The plugin's own logger over the bot's ports, so both write one stream (seek-log-<deviceId>.ndjson) and the human's report reads the bot's passes too.
+// The bot's device id is the one botDeviceId minted, served through the logger's per-origin store.
+export function botLogger(vault: FileAdapter, deviceId: string): SeekLogger {
+    const kv = new Map<string, string>([[DEVICE_ID_KEY, deviceId]]);
+    return new SeekLogger({ adapter: vault, device: { get: k => kv.get(k) ?? null, set: (k, v) => { kv.set(k, v); }, remove: k => { kv.delete(k); } }, platform: 'bot' }, 'seek');
 }

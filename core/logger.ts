@@ -120,7 +120,7 @@ const ORPHAN_LOG_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;   // 30 days
 // localStorage key holding this install's stable device id. localStorage is
 // device-local (NOT vault-synced) and survives plugin reloads — exactly the
 // scope we need: desktop and phone get distinct ids even on the same vault.
-const DEVICE_ID_KEY = 'seek-device-id-v1';
+export const DEVICE_ID_KEY = 'seek-device-id-v1';
 // Local-only "last generation I personally wrote" counter. Every writeInit()
 // stamps a fresh monotonic generation into this device's per-device init file
 // and remembers it here. A cloned/restored device (e.g. an iOS backup/restore)
