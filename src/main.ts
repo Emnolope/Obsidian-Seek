@@ -231,8 +231,6 @@ export default class SeekPlugin extends Plugin {
     private enforceIndexIdentity(): Promise<boolean> { return this.life.enforceIndexIdentity(); }
     private periodicReconcile(): Promise<void> { return this.life.periodicReconcile(); }
     private flushDirty(): Promise<void> { return this.life.flushDirty(); }
-    private scheduleFlush(): void { this.life.scheduleFlush(); }
-    private flushStructuralSoon(): void { this.life.flushStructuralSoon(); }
     private reconcileOnLoad(): Promise<void> { return this.life.reconcileOnLoad(); }
     private onSearchActivity(active: boolean): void { this.life.onSearchActivity(active); }
     private onQueryInFlight(inFlight: boolean): void { this.life.onQueryInFlight(inFlight); }
@@ -1205,22 +1203,17 @@ export default class SeekPlugin extends Plugin {
 
         // Structural events — discrete, rare, no blur equivalent.
         this.registerEvent(this.app.vault.on('create', (f) => {
-            if (f instanceof TFile && isIndexableFile(f, this.settings.indexBases)) { this.life.dirtyQueue.add(f.path); this.scheduleFlush(); }
+            if (f instanceof TFile && isIndexableFile(f, this.settings.indexBases)) this.life.onCreate(f.path);
         }));
         this.registerEvent(this.app.vault.on('delete', (f) => {
             if (!(f instanceof TFile) || !isIndexableFile(f, this.settings.indexBases)) return;
-            this.life.deletedQueue.add(f.path);
-            this.life.dirtyQueue.delete(f.path);
-            this.flushStructuralSoon();
+            this.life.onDelete(f.path);
         }));
         this.registerEvent(this.app.vault.on('rename', (f, oldPath) => {
             // Drop the old path (covers plain rename, move, and move-into-ignored
             // = soft-delete) and index the new one. shouldIndex/reindexDelta decide
             // the archive/un-archive outcome by destination.
-            this.life.deletedQueue.add(oldPath);
-            this.life.dirtyQueue.delete(oldPath);
-            if (f instanceof TFile && isIndexableFile(f, this.settings.indexBases)) this.life.dirtyQueue.add(f.path);
-            this.flushStructuralSoon();
+            this.life.onRename(oldPath, f instanceof TFile && isIndexableFile(f, this.settings.indexBases) ? f.path : null);
         }));
 
         // Window blur (desktop alt-tab) — same intent as visibilitychange:hidden.

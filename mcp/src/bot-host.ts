@@ -8,6 +8,7 @@ import { IndexCoordinator } from '../../core/index-coordinator.ts';
 import { ResidentIndex, type ResidentPorts } from '../../core/resident-index.ts';
 import { runSearch, runDenseSearch, type SearchHost, type SearchOverride, type ExperimentOverride } from '../../core/engine.ts';
 import { binaryCandidates } from '../../core/binary.ts';
+import { frameBm25Coherent } from '../../core/search-helpers.ts';
 import { MarkdownChunker } from '../../core/chunker.ts';
 import { chunksFor as chunksForCore, computeDelta, shouldIndexPath as shouldIndexPathCore, UnreadableQuarantine, type LiveFile } from '../../core/delta.ts';
 import { planFileDiff } from '../../core/file-diff.ts';
@@ -53,7 +54,7 @@ import { botLogger, vaultFiles, readVaultFile } from './base.ts';
 
 const MODEL_ID = ACTIVE_MODEL_SPEC.repo;
 const EMBEDDING_DIM = ACTIVE_MODEL_SPEC.dim;
-const DB_VERSION_BOT = 0; // no IndexedDB schema here; the sidecar gate ignores dbVersion by design
+export const DB_VERSION_BOT = 0; // no IndexedDB schema here; the sidecar gate ignores dbVersion by design
 const PLUGIN_VERSION = 'mcp';
 const INT8_RESIDENT_MAX_BYTES = 16 * 1024 * 1024;
 const cheapYield = (): Promise<void> => new Promise(r => setTimeout(r, 0));
@@ -203,6 +204,21 @@ export class BotHost {
       log: e => o.logger.append(e),
       logError: (t, err) => o.logger.appendError(t, err),
     };
+  }
+
+  // fork 1.1.3 src/search.ts:2604 SearchOrchestrator.verifyCoherent
+  async verifyCoherent(): Promise<boolean> {
+    const frame = await this.res.ensureFrame();
+    if (!frame) return true;
+    await this.res.ensureBm25(frame.orderedChunks);
+    if (!this.res.bm25Cache) return true;
+    return frameBm25Coherent(frame, this.res.bm25Cache, true);
+  }
+
+  // fork 1.1.3 src/search.ts:2653 SearchOrchestrator.indexedChunkCount
+  async indexedChunkCount(): Promise<number | null> {
+    try { return (await this.store.count()).chunks; }
+    catch { return null; }
   }
 
   // fork 1.1.3 src/search.ts:344 SearchOrchestrator.reindexAll

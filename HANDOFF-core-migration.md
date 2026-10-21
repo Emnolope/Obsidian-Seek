@@ -13,6 +13,14 @@
 - Bot host: `mcp/src/bot-host.ts` (BotHost = Node twin of SearchOrchestrator), `node-index-store.ts` (memory + snapshot in the MCP state dir, never the vault), `node-file-adapter.ts`, `bot-embedder.ts`, `base.ts` (state dir, `bot-xxxxxxxx` device id, vault lister, logger). Tests: `mcp/test/bot-host.test.ts` (index, delta, cross-bot hydrate with zero embeds).
 - Parity gaps: `.base` files not indexed by the bot (needs a YAML parser); link dictionary is a no-op on the bot.
 
+## Update 2026-10-21 (separation pass)
+- Moved to core (shims left in src/): stall-pattern, flush-schedule, embedder-lifecycle, index-notice, gzip, logger (LoggerPorts: adapter, per-origin kv, id prefix; src/logger.ts is a constructor adapter). The bot logs through the same SeekLogger.
+- `core/index-lifecycle.ts` = the controller lifted out of main.ts: edit queues, flush, catch-up drain, drift recovery, identity heal, periodic reconcile, pause/resume, health. Ports are `LifecyclePorts`; the plugin's are `SeekPlugin.lifePorts()`, the bot's are `mcp/src/bot-lifecycle.ts` (opt-in watcher: SEEK_MCP_WATCH=1). Bodies verified by normalized diff: only port substitutions differ.
+- BotHost gained search/searchDense/verifyCoherent/indexedChunkCount; BotReader serves search/fetch from the bot's own store, falling back to the export snapshot.
+- Pointers audited against the 1.1.3 tag (script: compare each `fork 1.1.3 src/X.ts:LINE Name` to `git show 1.1.3:src/X.ts`); fix any that drift.
+- Still in src/ and human-only on purpose: main.ts UI (modal, settings tab, commands, ribbon, notices), search-modal, query-field, suggest, insert-link, recents, platform, forensics, binary-scorer worker, embedder/iframe-runner (the bot has chromium-sidecar), prop-types.
+- Not yet separated: base-extractor (needs a YAML parser port), main.ts model/embedder management (ensureModelLoaded, deleteModel, getModelStatus), getIndexStats, the event relay, runFullReindex's non-UI core.
+
 ## Architecture (his metaphor: one program, three layers)
 - BASE differs per environment (Obsidian vs terminal/Node/Termux). MIDDLE (core/) is identical and written once. TOP differs (Obsidian UI vs MCP tools).
 - Rule: core/ is everything except low-level I/O and UI. Port big blocks, leave comments where unsure how.

@@ -1001,4 +1001,15 @@ export class IndexLifecycle {
             await this.p.logger.appendError('enqueueIfDirty', e).catch(() => {});
         }
     }
+
+    // fork 1.1.3 new; relates to src/main.ts:1452 SeekPlugin.wireIncrementalIndexing (the vault create/delete/rename handler bodies, path-based so a bot's file watcher can drive them too)
+    onCreate(path: string): void { this.dirtyQueue.add(path); this.scheduleFlush(); }
+    onDelete(path: string): void { this.deletedQueue.add(path); this.dirtyQueue.delete(path); this.flushStructuralSoon(); }
+    // newPath is null when the destination is not an indexable file.
+    onRename(oldPath: string, newPath: string | null): void {
+        this.deletedQueue.add(oldPath);
+        this.dirtyQueue.delete(oldPath);
+        if (newPath) this.dirtyQueue.add(newPath);
+        this.flushStructuralSoon();
+    }
 }

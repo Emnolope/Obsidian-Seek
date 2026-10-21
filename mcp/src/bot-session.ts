@@ -5,12 +5,14 @@ import { join, resolve } from 'node:path';
 import { numericKeysFromTypesJson, resolveSettings } from '../../core/memory-host.ts';
 import { BotHost } from './bot-host.ts';
 import { BotReader } from './bot-reader.ts';
+import { botLifecycle, watchVault } from './bot-lifecycle.ts';
+import type { IndexLifecycle } from '../../core/index-lifecycle.ts';
 import { BotEmbedder, type BatchSidecar } from './bot-embedder.ts';
 import { NodeIndexStore } from './node-index-store.ts';
 import { nodeFileAdapter } from './node-file-adapter.ts';
 import { botDeviceId, botLogger, stateDirFor } from './base.ts';
 
-export interface BotSession { host: BotHost; store: NodeIndexStore; reader: BotReader; deviceId: string }
+export interface BotSession { host: BotHost; store: NodeIndexStore; reader: BotReader; life: IndexLifecycle; deviceId: string }
 
 export async function openBotSession(vaultDir: string, sidecar: BatchSidecar): Promise<BotSession> {
   const root = resolve(vaultDir);
@@ -25,8 +27,13 @@ export async function openBotSession(vaultDir: string, sidecar: BatchSidecar): P
   try { types = JSON.parse(await readFile(join(root, '.obsidian/types.json'), 'utf8')); } catch { /* none: no numeric props */ }
   const store = new NodeIndexStore(`seek-index:${deviceId}`, state);
   await store.open();
-  const host = new BotHost({ vaultDir: root, vault, stateDir, store, embedder: new BotEmbedder(sidecar), logger: botLogger(vault, deviceId), settings: resolveSettings(raw), numericKeys: numericKeysFromTypesJson(types) });
-  return { host, store, reader: new BotReader(host, store), deviceId };
+  const settings = resolveSettings(raw);
+  const logger = botLogger(vault, deviceId);
+  const host = new BotHost({ vaultDir: root, vault, stateDir, store, embedder: new BotEmbedder(sidecar), logger, settings, numericKeys: numericKeysFromTypesJson(types) });
+  const life = botLifecycle(root, host, store, logger, settings);
+  // Opt-in: a watcher that embeds in the background is the user's call (battery), not a default.
+  if (process.env.SEEK_MCP_WATCH === '1') { await life.reconcileOnLoad(); watchVault(root, life, settings); }
+  return { host, store, reader: new BotReader(host, store), life, deviceId };
 }
 
 // The write verbs the MCP exposes; each is the human command's twin and ends by flushing the local store to disk.

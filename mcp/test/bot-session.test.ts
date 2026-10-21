@@ -48,3 +48,18 @@ test('what the bot indexes is searchable and fetchable from its own store', asyn
   await runWrite(s, 'index_delta');
   assert.equal((await s.reader.search({ text: 'zebra stripes' }))[0].notePath, 'b.md');
 });
+
+test('the core lifecycle drives the bot: a created note is flushed into the index and found', async () => {
+  process.env.SEEK_MCP_STATE = await mkdtemp(join(tmpdir(), 'seek-st-'));
+  const root = await mkdtemp(join(tmpdir(), 'seek-sv-'));
+  await mkdir(join(root, '.obsidian/plugins/seek'), { recursive: true });
+  await writeFile(join(root, 'a.md'), `# a\n\n${'alpha text here '.repeat(40)}\n`);
+  const s = await openBotSession(root, sidecar);
+  await runWrite(s, 'index_vault');
+  await writeFile(join(root, 'c.md'), `# c\n\n${'quokka marsupial '.repeat(40)}\n`);
+  s.life.onCreate('c.md');
+  await s.life.flushDirty();
+  assert.equal((await s.reader.search({ text: 'quokka marsupial' }))[0].notePath, 'c.md');
+  assert.equal(await s.host.verifyCoherent(), true);
+  assert.ok((await s.host.indexedChunkCount())! >= 2);
+});
