@@ -50,7 +50,8 @@ import type { QuantVec } from '../../core/quant.ts';
 import type { IndexCompleteEntry, IndexProgressEntry, MemorySnapshot } from '../../core/types.ts';
 import type { BotEmbedder } from './bot-embedder.ts';
 import type { NodeIndexStore } from './node-index-store.ts';
-import { botLogger, vaultFiles, readVaultFile } from './base.ts';
+import { botLogger, vaultFiles, readVaultFile, botParseYaml } from './base.ts';
+import { extractBaseDocs } from '../../core/base-extractor.ts';
 
 const MODEL_ID = ACTIVE_MODEL_SPEC.repo;
 const EMBEDDING_DIM = ACTIVE_MODEL_SPEC.dim;
@@ -120,14 +121,14 @@ export class BotHost {
 
   // ── BASE: what Obsidian's vault/app object gives the plugin ──
   // fork 1.1.3 new; relates to src/search.ts:1557 SearchOrchestrator.indexableFiles (async here: Node lists the vault; Obsidian hands back TFile[] synchronously)
-  private indexableFiles(): Promise<LiveFile<string>[]> { return vaultFiles(this.vaultDir, { indexBases: false }); }
+  private indexableFiles(): Promise<LiveFile<string>[]> { return vaultFiles(this.vaultDir, { indexBases: this.settings.indexBases }); }
   // fork 1.1.3 new; no method counterpart: vault.cachedRead(file) in the plugin, called inline at each read site
   private readFile(f: LiveFile<string>): Promise<string> { return readVaultFile(this.vaultDir)(f); }
   // fork 1.1.3 src/search.ts:1547 SearchOrchestrator.shouldIndex
   private shouldIndex(path: string): boolean { return shouldIndexPathCore(this.settings, path, () => false); }
   // fork 1.1.3 src/search.ts:1573 SearchOrchestrator.chunksFor
   private chunksFor(content: string, path: string, modifiedIso: string | null): Chunk[] {
-    return chunksForCore(this.chunker, () => { throw new Error('.base files are not indexed by the bot yet'); }, content, path, modifiedIso);
+    return chunksForCore(this.chunker, (c, p) => extractBaseDocs(c, p, botParseYaml), content, path, modifiedIso);
   }
   // The bot's per-vault key/value store: a JSON file in its own state dir (sync API, like localStorage).
   // fork 1.1.3 new; no method counterpart: backing file for loadLocalStorage/saveLocalStorage
