@@ -1,4 +1,4 @@
-// fork 1.1.3 new; relates to src/mcp-export.ts:14 exportMcpIndex (same join of metas, bodies and file records, read live from the bot's store instead of a snapshot)
+// new (our tree, not upstream); relates to src/mcp-export.ts:14 exportMcpIndex (same join of metas, bodies and file records, read live from the bot's store instead of a snapshot)
 // The read side over the bot's own store. Same method names and output shapes as SeekIndex, so the server swaps one for the other.
 import type { ChunkMeta, ScoredChunk } from '../../core/types.ts';
 import type { BotHost } from './bot-host.ts';

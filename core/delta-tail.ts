@@ -64,7 +64,7 @@ export async function harvestCarryOverInto(
     }
 }
 
-// fork 1.1.3 src/search.ts:2062 SearchOrchestrator.reconcileGhostDirt (threshold: SearchOrchestrator.GHOST_DIRT_REFIT_THRESHOLD)
+// fork 1.1.3 src/search.ts:2063 SearchOrchestrator.reconcileGhostDirt (threshold: SearchOrchestrator.GHOST_DIRT_REFIT_THRESHOLD)
 // Ghost-dirt safety valve (issue #5). The only discard-path tombstones left
 // are the ghost guards (tolerant-load divergence) — a handful of postings
 // whose df effect self-heals per queried term (searches clean dirty

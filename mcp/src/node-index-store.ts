@@ -76,7 +76,7 @@ export class NodeIndexStore implements IndexStore {
     }
     async setMeta(meta: MetaConfig): Promise<void> { this.cfg = meta; this.touch(); }
 
-    // fork 1.1.3 src/index-store.ts:~630 IndexStore.putBm25 / getBm25
+    // fork 1.1.3 src/index-store.ts:620 IndexStore.putBm25 / :630 getBm25
     async putBm25(json: string, stamp: unknown): Promise<void> { this.bm25 = { json, stamp }; this.touch(); }
     async getBm25(): Promise<{ json: string; stamp: unknown } | null> { return this.bm25; }
 

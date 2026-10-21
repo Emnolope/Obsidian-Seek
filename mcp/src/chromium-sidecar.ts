@@ -197,7 +197,7 @@ export class ChromiumSidecar {
     try { await this.start(); } catch (error) { await this.close(); throw error; }
   }
 
-  // fork 1.1.3 src/iframe-runner.ts:192 IframeRunner.embedBatch
+  // fork 1.1.3 src/iframe-runner.ts:386 IframeRunner.embedBatch
   async embedBatch(texts: string[], bucket?: number): Promise<{ vectors: Float32Array[]; latencyMs: number }> {
     await this.ready();
     const r = JSON.parse(await this.evaluate<string>(`window.__seekEmbedBatch(${JSON.stringify(texts)}, ${JSON.stringify(bucket ?? null)})`)) as { vectors: number[][]; latencyMs: number };
@@ -205,13 +205,13 @@ export class ChromiumSidecar {
     return { vectors: r.vectors.map(v => Float32Array.from(v)), latencyMs: r.latencyMs };
   }
 
-  // fork 1.1.3 src/iframe-runner.ts:208 IframeRunner.loadTokenizer
+  // fork 1.1.3 src/iframe-runner.ts:404 IframeRunner.loadTokenizer
   async loadTokenizer(): Promise<void> {
     await this.ready();
     await this.evaluate<null | boolean>('window.__seekLoadTokenizer().then(() => true)');
   }
 
-  // fork 1.1.3 src/iframe-runner.ts:201 IframeRunner.tokenCounts
+  // fork 1.1.3 src/iframe-runner.ts:395 IframeRunner.tokenCounts
   async tokenCounts(texts: string[]): Promise<number[]> {
     await this.ready();
     return JSON.parse(await this.evaluate<string>(`window.__seekTokenCounts(${JSON.stringify(texts)})`));

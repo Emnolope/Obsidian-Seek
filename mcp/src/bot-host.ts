@@ -1,4 +1,4 @@
-// fork 1.1.3 new; relates to src/search.ts:121 SearchOrchestrator
+// fork 1.1.3 new; relates to src/search.ts:221 SearchOrchestrator
 // The bot's host: Node twin of SearchOrchestrator. Same method names, same ctx shapes; core does the work behind ports.
 // Differences are the BASE layer only (node:fs vault, NodeIndexStore, BotEmbedder, no Obsidian UI/metadataCache).
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
@@ -100,6 +100,7 @@ export class BotHost {
   private warnedStranded = false;
   private local = new Map<string, string>();
 
+  // fork 1.1.3 src/search.ts:291 SearchOrchestrator.constructor
   constructor(init: BotHostInit) {
     this.vaultDir = init.vaultDir; this.vault = init.vault; this.stateDir = init.stateDir; this.store = init.store;
     this.embedder = init.embedder; this.logger = init.logger; this.settings = init.settings; this.numericKeys = init.numericKeys ?? new Set();
@@ -107,32 +108,45 @@ export class BotHost {
     this.res = new ResidentIndex(this.residentPorts());
   }
 
+  // fork 1.1.3 src/search.ts:307 SearchOrchestrator.dispose
   dispose(): void { this.disposed = true; this.res.dispose(); }
+  // fork 1.1.3 src/search.ts:324 SearchOrchestrator.currentGeneration
   currentGeneration(): number { return this.coord.generation; }
+  // fork 1.1.3 src/search.ts:2912 SearchOrchestrator.peerAhead
   get peerAhead(): boolean { return this._peerAhead; }
+  // fork 1.1.3 src/search.ts:338 SearchOrchestrator.isWriting
   isWriting(): boolean { return this.coord.isWriting() || this.sidecarFlushesInFlight > 0; }
 
   // ── BASE: what Obsidian's vault/app object gives the plugin ──
+  // fork 1.1.3 new; relates to src/search.ts:1557 SearchOrchestrator.indexableFiles (async here: Node lists the vault; Obsidian hands back TFile[] synchronously)
   private indexableFiles(): Promise<LiveFile<string>[]> { return vaultFiles(this.vaultDir, { indexBases: false }); }
+  // fork 1.1.3 new; no method counterpart: vault.cachedRead(file) in the plugin, called inline at each read site
   private readFile(f: LiveFile<string>): Promise<string> { return readVaultFile(this.vaultDir)(f); }
+  // fork 1.1.3 src/search.ts:1547 SearchOrchestrator.shouldIndex
   private shouldIndex(path: string): boolean { return shouldIndexPathCore(this.settings, path, () => false); }
+  // fork 1.1.3 src/search.ts:1573 SearchOrchestrator.chunksFor
   private chunksFor(content: string, path: string, modifiedIso: string | null): Chunk[] {
     return chunksForCore(this.chunker, () => { throw new Error('.base files are not indexed by the bot yet'); }, content, path, modifiedIso);
   }
   // The bot's per-vault key/value store: a JSON file in its own state dir (sync API, like localStorage).
+  // fork 1.1.3 new; no method counterpart: backing file for loadLocalStorage/saveLocalStorage
   private localFile(): string { return join(this.stateDir, 'local-storage.json'); }
+  // fork 1.1.3 new; no method counterpart: app.loadLocalStorage in the plugin, called inline
   private loadLocalStorage(k: string): unknown {
     if (this.local.size === 0) { try { for (const [a, b] of Object.entries(JSON.parse(readFileSync(this.localFile(), 'utf8')))) this.local.set(a, String(b)); } catch { /* none yet */ } }
     const v = this.local.get(k);
     return v === undefined ? null : v;
   }
+  // fork 1.1.3 new; no method counterpart: app.saveLocalStorage in the plugin, called inline
   private saveLocalStorage(k: string, v: string): void {
     this.loadLocalStorage(k);
     this.local.set(k, v);
     mkdirSync(this.stateDir, { recursive: true });
     writeFileSync(this.localFile(), JSON.stringify(Object.fromEntries(this.local)));
   }
+  // fork 1.1.3 src/search.ts:375 SearchOrchestrator.quotaToast
   private quotaToast(): void { console.warn('[seek] device storage is full — some notes could not be indexed'); }
+  // fork 1.1.3 src/search.ts:285 SearchOrchestrator.quarantineUnreadable
   private quarantineUnreadable(path: string): void {
     if (this.unreadable.add(path)) console.warn(`[seek] quarantining persistently unreadable file (will retry on backoff / next full reindex): ${path}`);
   }
@@ -207,6 +221,7 @@ export class BotHost {
   }
 
   // The reset path closes and reopens the store; the in-memory twin has nothing to release, so open/close are cheap no-ops.
+  // fork 1.1.3 new; relates to src/search.ts:344 SearchOrchestrator.reindexAll (the plugin closes and reopens IndexedDB on reset; the in-memory twin has nothing to release)
   private storeForReset() { return this.store; }
 
   // fork 1.1.3 src/search.ts:578 SearchOrchestrator.embedAndCommitFiles
@@ -218,6 +233,7 @@ export class BotHost {
     return embedAndCommit<string>(this.embedCommitCtx(), files, mode, onProgress, overallStart, memBefore, budget);
   }
 
+  // fork 1.1.3 new; relates to src/search.ts:578 SearchOrchestrator.embedAndCommitFiles (builds the ports object the plugin assembles inline)
   private embedCommitCtx(): EmbedCommitCtx<string> {
     const o = this;
     return {
@@ -238,7 +254,7 @@ export class BotHost {
     };
   }
 
-  // fork 1.1.3 src/search.ts:1520 SearchOrchestrator.computeDelta
+  // fork 1.1.3 src/search.ts:1586 SearchOrchestrator.computeDelta
   async computeDelta(): Promise<{ dirty: string[]; deleted: string[] }> {
     await this.refreshFiles();
     return computeDelta<string>({
@@ -285,6 +301,7 @@ export class BotHost {
   }
 
   // Synchronous lookup the delta needs per path; the lister already carries mtime, so stat directly.
+  // fork 1.1.3 new; no method counterpart: app.vault.getAbstractFileByPath in the plugin, called inline in reindexDelta
   private liveFile(path: string): LiveFile<string> | null {
     try {
       const mtime = statSync(join(this.vaultDir, path)).mtimeMs;
@@ -292,6 +309,7 @@ export class BotHost {
     } catch { return null; }
   }
 
+  // fork 1.1.3 src/search.ts:2063 SearchOrchestrator.reconcileGhostDirt
   private reconcileGhostDirt(): boolean {
     return reconcileGhostDirtCore({ bm25Cache: this.res.bm25Cache, forensics: this.forensics, invalidateBm25Cache: () => this.invalidateBm25Cache(), warmCaches: r => this.warmCaches(r) });
   }
@@ -321,23 +339,36 @@ export class BotHost {
     return deltaFallbackCore({ deltaFallbackCounts: this.deltaFallbackCounts, setLastReason: r => { this.lastDeltaFallbackReason = r; }, forensics: this.forensics }, reason, detail);
   }
 
+  // fork 1.1.3 src/search.ts:2415 SearchOrchestrator.hydrateSidecar
   async hydrateSidecar(): Promise<HydrateResult | null> { await this.refreshFiles(); return hydrateSidecarCore(this.sidecarSyncCtx()); }
+  // fork 1.1.3 src/search.ts:2479 SearchOrchestrator.rebuildFromSidecar
   async rebuildFromSidecar(): Promise<HydrateResult | null> { await this.refreshFiles(); return rebuildFromSidecarCore(this.sidecarSyncCtx()); }
+  // fork 1.1.3 src/search.ts:2667 SearchOrchestrator.reconcileSidecarIfChanged
   async reconcileSidecarIfChanged(): Promise<HydrateResult | null> { await this.refreshFiles(); return reconcileSidecarIfChangedCore(this.sidecarSyncCtx()); }
+  // fork 1.1.3 src/search.ts:2513 SearchOrchestrator.peerSidecarPresent
   async peerSidecarPresent(): Promise<boolean> { return peerSidecarPresentCore(this.sidecarOpsCtx()); }
+  // fork 1.1.3 src/search.ts:2792 SearchOrchestrator.compactOwnSidecar
   async compactOwnSidecar() { await this.refreshFiles(); return compactOwnSidecarCore(this.sidecarOpsCtx()); }
+  // fork 1.1.3 src/search.ts:2875 SearchOrchestrator.coalesceOwnSidecar
   async coalesceOwnSidecar() { return coalesceOwnSidecarCore(this.sidecarOpsCtx()); }
+  // fork 1.1.3 src/search.ts:2583 SearchOrchestrator.reapDeadIdentitySidecars
   private async reapDeadIdentitySidecars(): Promise<number> { return reapDeadIdentitySidecarsCore(this.sidecarOpsCtx()); }
+  // fork 1.1.3 src/search.ts:2622 SearchOrchestrator.reconcileSigKey
   private reconcileSigKey(): string { return reconcileSigKeyCore(this.sidecarOpsCtx()); }
+  // fork 1.1.3 src/search.ts:2626 SearchOrchestrator.loadPersistedReconcileSig
   private loadPersistedReconcileSig(): string | null { return loadPersistedReconcileSigCore(this.sidecarOpsCtx()); }
+  // fork 1.1.3 src/search.ts:2634 SearchOrchestrator.persistReconcileSig
   private persistReconcileSig(sig: string): void { persistReconcileSigCore(this.sidecarOpsCtx(), sig); }
+  // fork 1.1.3 src/search.ts:2643 SearchOrchestrator.indexIsEmpty
   private async indexIsEmpty(): Promise<boolean> { return indexIsEmptyCore(this.sidecarOpsCtx()); }
 
+  // fork 1.1.3 src/search.ts:2530 SearchOrchestrator.sweepOrphanChunks
   async sweepOrphanChunks(opts: { shouldContinue?: () => boolean } = {}) {
     const o = this;
     return sweepOrphanChunksCore({ coord: o.coord, store: o.store, invalidateBm25Cache: () => o.invalidateBm25Cache(), warmCaches: t => o.warmCaches(t) }, opts);
   }
 
+  // fork 1.1.3 src/search.ts:412 SearchOrchestrator.flushSidecarAfterPass
   private flushSidecarAfterPass(job: SidecarFlushJob | null): Promise<void> {
     const o = this;
     return flushSidecarAfterPassCore({
@@ -347,6 +378,7 @@ export class BotHost {
     }, job);
   }
 
+  // fork 1.1.3 src/search.ts:433 SearchOrchestrator.runSidecarFlush
   private async runSidecarFlush(job: SidecarFlushJob): Promise<void> {
     const o = this;
     return runSidecarFlushCore({
@@ -356,6 +388,7 @@ export class BotHost {
     }, job);
   }
 
+  // fork 1.1.3 new; relates to src/search.ts:2415 SearchOrchestrator.hydrateSidecar (ports for hydrate/rebuild/reconcile; the plugin passes `this` fields inline)
   private sidecarSyncCtx(): SidecarSyncCtx<FileAdapter> {
     const o = this;
     return {
@@ -372,6 +405,7 @@ export class BotHost {
     };
   }
 
+  // fork 1.1.3 new; relates to src/search.ts:2415 SearchOrchestrator.hydrateSidecar (ports for the sidecar ops; the plugin passes `this` fields inline)
   private sidecarOpsCtx(): SidecarOpsCtx<FileAdapter> {
     const o = this;
     return {
@@ -384,9 +418,12 @@ export class BotHost {
     };
   }
 
+  // fork 1.1.3 src/search.ts:2699 SearchOrchestrator.reChunkLive
   private async reChunkLive(): Promise<ReChunkedNote[]> { return reChunkLiveCore(this.liveOracleCtx()); }
+  // fork 1.1.3 src/search.ts:2736 SearchOrchestrator.collectLiveIds
   private async collectLiveIds(): Promise<{ ids: Set<string>; complete: boolean }> { return collectLiveIdsCore(this.liveOracleCtx()); }
 
+  // fork 1.1.3 new; relates to src/search.ts:2736 SearchOrchestrator.collectLiveIds (ports for reChunkLive/collectLiveIds)
   private liveOracleCtx(): LiveOracleCtx<string> {
     const o = this;
     return {
@@ -398,12 +435,15 @@ export class BotHost {
   }
   // The oracles take a synchronous lister; refresh it before any oracle-driven pass.
   private cachedFiles: LiveFile<string>[] = [];
+  // fork 1.1.3 new; relates to src/search.ts:1557 SearchOrchestrator.indexableFiles (the oracles take a synchronous lister, so the bot refreshes a cache before each oracle-driven pass)
   async refreshFiles(): Promise<void> { this.cachedFiles = await this.indexableFiles(); }
 
+  // fork 1.1.3 src/search.ts:2994 SearchOrchestrator.hydrateDeps
   private hydrateDeps(reChunk: () => Promise<ReChunkedNote[]>, addsSink?: DeltaAdd[]): HydrateDeps<FileAdapter> {
     return hydrateDepsCore(this.sidecarSyncCtx(), reChunk, addsSink);
   }
 
+  // fork 1.1.3 src/search.ts:3037 SearchOrchestrator.dedupViaSidecar
   private async dedupViaSidecar(
     files: LiveFile<string>[], addsSink?: DeltaAdd[], removedSink?: string[], removedBodiesSink?: Map<string, string>, metaPatchSink?: Array<{ id: string; meta: ChunkMeta }>,
   ): Promise<LiveFile<string>[]> {
@@ -417,10 +457,12 @@ export class BotHost {
     }, files, addsSink, removedSink, removedBodiesSink, metaPatchSink);
   }
 
+  // fork 1.1.3 src/search.ts:3146 SearchOrchestrator.harvestCarryOverInto
   private async harvestCarryOverInto(map: Map<string, { q: QuantVec; sign: Uint8Array }>, paths: string[]): Promise<void> {
     return harvestCarryOverIntoCore({ store: this.store, logger: this.logger }, map, paths);
   }
 
+  // fork 1.1.3 src/search.ts:3177 SearchOrchestrator.carryOverHydrate
   private async carryOverHydrate(files: LiveFile<string>[], carryOver: Map<string, { q: QuantVec; sign: Uint8Array }>): Promise<LiveFile<string>[]> {
     const o = this;
     return carryOverHydrateCore<string>({
@@ -430,6 +472,7 @@ export class BotHost {
     }, files, carryOver);
   }
 
+  // fork 1.1.3 src/search.ts:3232 SearchOrchestrator.emitProgress
   private async emitProgress(phase: IndexProgressEntry['phase'], filesSeen: number, filesTotal: number, chunksEmitted: number, elapsedMs: number): Promise<void> {
     return emitProgressCore({ settings: this.settings, logger: this.logger }, phase, filesSeen, filesTotal, chunksEmitted, elapsedMs);
   }
@@ -453,6 +496,7 @@ export class BotHost {
       now: () => performance.now(),
     };
   }
+  // fork 1.1.3 src/search.ts:4299 SearchOrchestrator.warmCaches
   warmCaches(trigger: string): Promise<void> { return this.res.warmCaches(trigger); }
   invalidateBm25Cache(): void { this.res.invalidateBm25Cache(); }
 }

@@ -1,3 +1,4 @@
+// fork 1.1.3 new; relates to src/main.ts:305 SeekPlugin.onload (assembles settings, store, logger and orchestrator for one vault)
 // Opens one vault for writing: state dir + persisted store + BotHost. Mirrors what the plugin's onload assembles.
 import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';

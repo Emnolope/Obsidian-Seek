@@ -1,3 +1,4 @@
+// fork 1.1.3 new; relates to src/iframe-runner.ts:840 (pooling/normalize/max_length as the iframe passes them) and src/platform.ts:92 resolveDevice
 // Compact compatibility contract extracted from Seek's model-registry.ts,
 // embedder.ts, and iframe-runner.ts. Keep this file easy to compare against
 // those upstream blocks; MCP transport belongs elsewhere.

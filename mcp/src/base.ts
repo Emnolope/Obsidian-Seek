@@ -1,3 +1,4 @@
+// fork 1.1.3 new; relates to src/main.ts:305 SeekPlugin.onload (device id, logger), src/logger.ts:196 SeekLogger (botLogger) and src/search.ts:1557 SearchOrchestrator.indexableFiles (vaultFiles)
 // BASE layer for the bot: the Node-side answers to what Obsidian gives the plugin for free
 // (app state dir, device id, vault file listing, file reads, log stream). Core never sees any of this.
 import { createHash, randomBytes } from 'node:crypto';

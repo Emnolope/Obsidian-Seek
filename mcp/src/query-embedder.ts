@@ -22,6 +22,7 @@ type SeekWebRuntime = {
 
 let runtimePromise: Promise<SeekWebRuntime> | null = null;
 
+// fork 1.1.3 src/iframe-runner.ts:729 overrideGlueForWasm
 // ── SEEK SOURCE PORT: iframe-runner.ts / overrideGlueForWasm ──────────────
 // Seek's Android path uses the plain ORT-WASM glue. Transformers.js selects the
 // asyncify glue on non-WebKit environments, but that build does not carry the
