@@ -27,6 +27,8 @@ export function botLifecycle(vaultDir: string, host: BotHost, store: NodeIndexSt
     newPacer: () => ({ pace: () => new Promise<void>(r => setTimeout(r, 0)) }),
     mtimeOf: p => { try { return statSync(join(vaultDir, p)).mtimeMs; } catch { return -1; } },
     isIndexing: () => host.isWriting(),
+    confirm: async () => true,
+    afterFullReindex: async () => {},
   };
   return new IndexLifecycle(ports);
 }

@@ -19,7 +19,8 @@
 - BotHost gained search/searchDense/verifyCoherent/indexedChunkCount; BotReader serves search/fetch from the bot's own store, falling back to the export snapshot.
 - Pointers audited against the 1.1.3 tag (script: compare each `fork 1.1.3 src/X.ts:LINE Name` to `git show 1.1.3:src/X.ts`); fix any that drift.
 - Still in src/ and human-only on purpose: main.ts UI (modal, settings tab, commands, ribbon, notices), search-modal, query-field, suggest, insert-link, recents, platform, forensics, binary-scorer worker, embedder/iframe-runner (the bot has chromium-sidecar), prop-types.
-- Not yet separated: base-extractor (needs a YAML parser port), main.ts model/embedder management (ensureModelLoaded, deleteModel, getModelStatus), getIndexStats, the event relay, runFullReindex's non-UI core.
+- base-extractor is in core (`extractBaseDocs(raw, path, parseYaml)`); the bot honors `indexBases` and uses the `yaml` package if installed, else indexes bases by name only (adding the dependency is his call). runFullReindex's core is `IndexLifecycle.runFullReindex` (ports: confirm, afterFullReindex); the bot's `index_vault` still calls `host.reindexAll` directly, so it skips the pause/health flags.
+- Not yet separated: main.ts model/embedder management (ensureModelLoaded, deleteModel, getModelStatus), getIndexStats, the event relay, runFullReindex's non-UI core.
 
 ## Architecture (his metaphor: one program, three layers)
 - BASE differs per environment (Obsidian vs terminal/Node/Termux). MIDDLE (core/) is identical and written once. TOP differs (Obsidian UI vs MCP tools).

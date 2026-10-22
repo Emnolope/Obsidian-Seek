@@ -62,6 +62,8 @@ export interface LifecycleHost {
     reconcileSidecarIfChanged(): Promise<unknown>;
     hydrateSidecar(): Promise<unknown>;
     warmCaches(trigger: string): Promise<void>;
+    invalidateBm25Cache(): void;
+    reindexAll(onProgress?: (msg: string) => void, opts?: { shouldContinue?: () => boolean; isPaused?: () => boolean }): Promise<IndexCompleteEntry>;
     verifyCoherent(): Promise<boolean>;
     sweepOrphanChunks(opts: { shouldContinue?: () => boolean }): Promise<{ removed: number; completed: boolean }>;
     compactOwnSidecar(): Promise<{ compacted: boolean; shed: number; reason?: string } | null>;
@@ -89,6 +91,10 @@ export interface LifecyclePorts {
     // Epoch-ms mtime of a live vault file, or -1 when it no longer exists (deleted or moved).
     mtimeOf(path: string): number;
     isIndexing(): boolean;
+    // The plugin's modal confirm; the bot has no one to ask, so it resolves true.
+    confirm(message: string): Promise<boolean>;
+    // Post-reindex telemetry the plugin emits (storage snapshot); a no-op for the bot.
+    afterFullReindex(): Promise<void>;
 }
 
 export class IndexLifecycle {
@@ -1011,5 +1017,105 @@ export class IndexLifecycle {
         this.dirtyQueue.delete(oldPath);
         if (newPath) this.dirtyQueue.add(newPath);
         this.flushStructuralSoon();
+    }
+
+    // fork 1.1.3 src/main.ts:1989 SeekPlugin.runFullReindex (ConfirmModal -> ports.confirm, emitStorageSnapshot -> ports.afterFullReindex)
+    // Full reindex: nuke the index and re-embed every markdown file. Shared by the
+    // command palette and the settings "Full reindex" button (the degraded-health
+    // recovery affordance). USER-INITIATED, so unlike the automatic drift-recovery
+    // ladder it is allowed to embed — the embed-free guarantee covers only the auto path.
+    // opts.skipConfirm: the caller already confirmed (the settings Index section has its
+    // own inline two-button confirm, so it suppresses the blocking confirm dialog).
+    // opts.onProgress: a second progress sink (besides the Notice) — the settings status
+    // card subscribes to drive its live "N / TOTAL notes" bar. Arg-less callers (command
+    // palette main.ts:496, degraded-health button) keep the confirm + Notice unchanged.
+    // Returns whether a reindex actually RAN — false when refused (a build is already
+    // running) or declined at the confirm, or if it threw. The identity heal uses this
+    // to avoid falsely clearing its "needs heal" latch when its reindex didn't happen.
+    async runFullReindex(opts?: { skipConfirm?: boolean; onProgress?: (msg: string) => void }): Promise<boolean> {
+        // Refuse to STACK a reindex on a running one. The write mutex would otherwise
+        // queue a second reindex behind the first (it nukes + re-embeds the whole
+        // vault again the moment the first releases) — pure waste, and on a large
+        // vault the second's nuke is exactly the deleteDatabase that fired versionchange
+        // at an in-flight pass. The identity heal also routes through here, so this
+        // doubles as a guard against a heal stacking on a manual reindex (Fix B). The
+        // catch-up cold build runs under the same mutex (isWriting covers it too).
+        if (this.p.host.isWriting()) {
+            this.p.notify('Seek: a reindex is already running.', 4000);
+            return false;
+        }
+        if (!opts?.skipConfirm) {
+            const message = 'This will delete the existing Seek index and re-embed every markdown file in this vault.\nProceed?';
+            if (!(await this.p.confirm(message))) return false;
+            // Re-check: the confirm dialog awaits user input, so a reindex (e.g. the
+            // identity heal, or another caller of this same method) could have started
+            // in that window. Without this, both would proceed past the mutex.
+            if (this.p.host.isWriting()) {
+                this.p.notify('Seek: a reindex is already running.', 4000);
+                return false;
+            }
+        }
+
+        // Start toast + end summary only — no live-updating sticky Notice. Live
+        // progress still streams to opts.onProgress (the settings tab's reindex
+        // button renders it inline; that's where "watch it go" lives).
+        this.p.notify('Seek: full reindex starting…', 4000);
+        this.p.pushTaskContext('indexing');
+        try {
+            await this.p.ensureModelLoaded();
+            this.p.host.invalidateBm25Cache();
+            this.indexPauseRequested = false;   // fresh run; clear any stale request
+            const result = await this.p.host.reindexAll(opts?.onProgress, {
+                // 3A soft preempt: the full pass pauses between files while the user
+                // types / a query embed is in flight — the same indexingBlocked
+                // signal every other indexing path honours — then resumes. It never
+                // aborts (a full reindex must finish; see embedAndCommitFiles).
+                shouldContinue: () => !this.indexingBlocked,
+                // Design B manual pause: polled at loop-top; when set the pass breaks
+                // out, commits what it started, and returns paused (below).
+                isPaused: () => this.indexPauseRequested,
+            });
+            // Manual pause: the pass returned a PARTIAL index (design B). Don't claim a
+            // completed reindex — latch `indexPaused` so the settings tab shows the
+            // Resume affordance, and skip the "terminal recovery" health/version resets
+            // below (they belong to a pass that actually saw the whole corpus). The
+            // committed files are durable + searchable; resume finishes the rest.
+            if (result.paused) {
+                this.indexPauseRequested = false;
+                this.indexPaused = true;
+                this.p.notify(`Seek: indexing paused · ${result.filesIndexed} files done — resume to finish.`, 6000);
+                return true;
+            }
+            const summary = [
+                result.pass ? '✅' : '❌',
+                `${result.filesIndexed} files`,
+                `${result.chunksIndexed} chunks`,
+                `${(result.totalDurationMs / 1000).toFixed(1)} s`,
+                `${result.chunksPerSec.toFixed(1)} ch/s`,
+            ].join(' · ');
+            this.p.notify(`Seek reindex: ${summary}`, 10000);
+
+            // Post-reindex storage snapshot — answers "how much disk does the index
+            // actually consume?" without waiting for the next platform probe (reload).
+            await this.p.afterFullReindex();
+            // A full reindex re-couples the index from scratch (it is the terminal
+            // recovery): clear any lingering degraded health so the settings affordance,
+            // the version banner, and the suppression baseline all reset.
+            this.indexHealth = 'healthy';
+            this.degradedReason = null;
+            this.peerSyncPending = false;
+            // Re-arm version reporting: this build just stamped its identity, so a FUTURE
+            // ship should toast/banner again. (Without this, identityHealNotified could
+            // stay latched until the next poll's identityMatches clears it.)
+            this.identityHealNotified = false;
+            return true;
+        } catch (e) {
+            await this.p.logger.appendError('seek-full-reindex', e);
+            // One end-toast whether it passed or failed (the recap). Detail → console + log.
+            this.p.notify('Seek reindex: ❌ failed — see the logging report (Settings → Seek).', 10000);
+            return false;
+        } finally {
+            this.p.popTaskContext('indexing');
+        }
     }
 }

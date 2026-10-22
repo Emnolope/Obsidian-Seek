@@ -225,6 +225,8 @@ export default class SeekPlugin extends Plugin {
             newPacer: () => new CompositorPacer(),
             mtimeOf: p => { const f = o.app.vault.getAbstractFileByPath(p); return f instanceof TFile ? f.stat.mtime : -1; },
             isIndexing: () => o.isIndexing,
+            confirm: message => new ConfirmModal(o.app, message).openAndConfirm(),
+            afterFullReindex: () => o.emitStorageSnapshot('post-reindex'),
         };
     }
 
@@ -1439,90 +1441,7 @@ export default class SeekPlugin extends Plugin {
     // running) or declined at the confirm, or if it threw. The identity heal uses this
     // to avoid falsely clearing its "needs heal" latch when its reindex didn't happen.
     async runFullReindex(opts?: { skipConfirm?: boolean; onProgress?: (msg: string) => void }): Promise<boolean> {
-        // Refuse to STACK a reindex on a running one. The write mutex would otherwise
-        // queue a second reindex behind the first (it nukes + re-embeds the whole
-        // vault again the moment the first releases) — pure waste, and on a large
-        // vault the second's nuke is exactly the deleteDatabase that fired versionchange
-        // at an in-flight pass. The identity heal also routes through here, so this
-        // doubles as a guard against a heal stacking on a manual reindex (Fix B). The
-        // catch-up cold build runs under the same mutex (isWriting covers it too).
-        if (this.orchestrator.isWriting()) {
-            new Notice('Seek: a reindex is already running.', 4000);
-            return false;
-        }
-        if (!opts?.skipConfirm) {
-            const message = 'This will delete the existing Seek index and re-embed every markdown file in this vault.\nProceed?';
-            if (!(await new ConfirmModal(this.app, message).openAndConfirm())) return false;
-            // Re-check: the confirm dialog awaits user input, so a reindex (e.g. the
-            // identity heal, or another caller of this same method) could have started
-            // in that window. Without this, both would proceed past the mutex.
-            if (this.orchestrator.isWriting()) {
-                new Notice('Seek: a reindex is already running.', 4000);
-                return false;
-            }
-        }
-
-        // Start toast + end summary only — no live-updating sticky Notice. Live
-        // progress still streams to opts.onProgress (the settings tab's reindex
-        // button renders it inline; that's where "watch it go" lives).
-        new Notice('Seek: full reindex starting…', 4000);
-        this.pushTaskContext('indexing');
-        try {
-            await this.ensureModelLoaded();
-            this.orchestrator.invalidateBm25Cache();
-            this.life.indexPauseRequested = false;   // fresh run; clear any stale request
-            const result = await this.orchestrator.reindexAll(opts?.onProgress, {
-                // 3A soft preempt: the full pass pauses between files while the user
-                // types / a query embed is in flight — the same indexingBlocked
-                // signal every other indexing path honours — then resumes. It never
-                // aborts (a full reindex must finish; see embedAndCommitFiles).
-                shouldContinue: () => !this.life.indexingBlocked,
-                // Design B manual pause: polled at loop-top; when set the pass breaks
-                // out, commits what it started, and returns paused (below).
-                isPaused: () => this.life.indexPauseRequested,
-            });
-            // Manual pause: the pass returned a PARTIAL index (design B). Don't claim a
-            // completed reindex — latch `indexPaused` so the settings tab shows the
-            // Resume affordance, and skip the "terminal recovery" health/version resets
-            // below (they belong to a pass that actually saw the whole corpus). The
-            // committed files are durable + searchable; resume finishes the rest.
-            if (result.paused) {
-                this.life.indexPauseRequested = false;
-                this.life.indexPaused = true;
-                new Notice(`Seek: indexing paused · ${result.filesIndexed} files done — resume to finish.`, 6000);
-                return true;
-            }
-            const summary = [
-                result.pass ? '✅' : '❌',
-                `${result.filesIndexed} files`,
-                `${result.chunksIndexed} chunks`,
-                `${(result.totalDurationMs / 1000).toFixed(1)} s`,
-                `${result.chunksPerSec.toFixed(1)} ch/s`,
-            ].join(' · ');
-            new Notice(`Seek reindex: ${summary}`, 10000);
-
-            // Post-reindex storage snapshot — answers "how much disk does the index
-            // actually consume?" without waiting for the next platform probe (reload).
-            await this.emitStorageSnapshot('post-reindex');
-            // A full reindex re-couples the index from scratch (it is the terminal
-            // recovery): clear any lingering degraded health so the settings affordance,
-            // the version banner, and the suppression baseline all reset.
-            this.life.indexHealth = 'healthy';
-            this.life.degradedReason = null;
-            this.life.peerSyncPending = false;
-            // Re-arm version reporting: this build just stamped its identity, so a FUTURE
-            // ship should toast/banner again. (Without this, identityHealNotified could
-            // stay latched until the next poll's identityMatches clears it.)
-            this.life.identityHealNotified = false;
-            return true;
-        } catch (e) {
-            await this.logger.appendError('seek-full-reindex', e);
-            // One end-toast whether it passed or failed (the recap). Detail → console + log.
-            new Notice('Seek reindex: ❌ failed — see the logging report (Settings → Seek).', 10000);
-            return false;
-        } finally {
-            this.popTaskContext('indexing');
-        }
+        return this.life.runFullReindex(opts);
     }
 
     // Index health snapshot for the settings Index status card. Read-only; gathers the
