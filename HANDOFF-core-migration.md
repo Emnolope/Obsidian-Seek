@@ -22,6 +22,14 @@
 - base-extractor is in core (`extractBaseDocs(raw, path, parseYaml)`); the bot honors `indexBases` and uses the `yaml` package if installed, else indexes bases by name only (adding the dependency is his call). runFullReindex's core is `IndexLifecycle.runFullReindex` (ports: confirm, afterFullReindex); the bot's `index_vault` still calls `host.reindexAll` directly, so it skips the pause/health flags.
 - Not yet separated: main.ts model/embedder management (ensureModelLoaded, deleteModel, getModelStatus), getIndexStats, the event relay, runFullReindex's non-UI core.
 
+## Update 2026-10-22 (parity pass, branch monorepo-core)
+- Closed: link dictionary on the bot (core `scanWikiLinks` + `mcp/src/link-miner.ts`), `.base` indexing with `yaml` as a real MCP dependency, `index_vault` through `IndexLifecycle.runFullReindex` (still returns the pass numbers, plus `ran`/`paused`/`health`), live-store `index_status` returns the snapshot's keys plus `source`, CLI write verbs (`index`, `delta`, `hydrate`, `compact`) and live-store reads (shared routing in `bot-route.ts`), Excluded files honored by the bot (`app.json` userIgnoreFilters, also in the watcher), `getIndexStats`/`getModelStatus`/`deleteModel` in `core/index-stats.ts` with bot tools `index_stats`, `model_status`, `delete_model`.
+- Decisions I made, unconfirmed: added the `yaml` runtime dependency; added the new MCP tools/CLI verbs; model-present heuristic (>= 50 MB in the Chromium profile, `SEEK_MCP_CHROMIUM_PROFILE` overrides the profile path).
+- Left human-only on purpose: UI, the companion `seek:search` event relay, the plugin's embedder runtime.
+- Open question, not verified: the sidecar's HTTP server binds port 0, so the Chromium origin changes every run and its Cache API model cache may not survive restarts. Check on the phone whether the model re-downloads each start.
+- Verified: `npm run typecheck`, 1266 plugin tests, 25 MCP tests, `npm run build`, `npm run build:mcp`. Never run: real Obsidian, phone, release.yml, Chromium embed.
+- Still stale: `mcp/README.md`, `CONTEXT.md`, `HANDOFF.md`, `TODO.md`, `INVESTIGATION.md` describe the old two-repo, read-only layout. Syncthing hydration bug still open (needs the phone's log lines).
+
 ## Architecture (his metaphor: one program, three layers)
 - BASE differs per environment (Obsidian vs terminal/Node/Termux). MIDDLE (core/) is identical and written once. TOP differs (Obsidian UI vs MCP tools).
 - Rule: core/ is everything except low-level I/O and UI. Port big blocks, leave comments where unsure how.
