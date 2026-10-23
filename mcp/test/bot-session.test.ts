@@ -97,3 +97,25 @@ test('Obsidian\'s Excluded files (app.json userIgnoreFilters) keep notes out of 
   await runWrite(s, 'index_vault');
   assert.deepEqual((await s.store.listFileRecords()).map(r => r.note_path), ['keep.md']);
 });
+
+test('stats and model status come from the files the bot owns; delete_model clears the browser profile', async () => {
+  const profile = await mkdtemp(join(tmpdir(), 'seek-prof-'));
+  process.env.SEEK_MCP_CHROMIUM_PROFILE = profile;
+  process.env.SEEK_MCP_STATE = await mkdtemp(join(tmpdir(), 'seek-st-'));
+  const root = await mkdtemp(join(tmpdir(), 'seek-sv-'));
+  await mkdir(join(root, '.obsidian/plugins/seek'), { recursive: true });
+  await writeFile(join(root, 'a.md'), `# a\n\n${'alpha text here '.repeat(40)}\n`);
+  const s = await openBotSession(root, sidecar);
+  await runWrite(s, 'index_vault');
+  const st = await s.host.getIndexStats();
+  assert.equal(st.files, 1);
+  assert.ok(st.chunks >= 1 && st.lastFullAt && st.lastUpdatedAt, JSON.stringify(st));
+  assert.ok(st.indexMB! > 0 && st.modelMB === 0);
+  assert.equal((await s.host.getModelStatus()).downloaded, false, 'a lazy sidecar being "loaded" must not read as downloaded');
+  await writeFile(join(profile, 'model.bin'), Buffer.alloc(60 * 1e6));
+  assert.equal((await s.host.getModelStatus()).downloaded, true);
+  const del = await runWrite(s, 'delete_model') as { deleted: number };
+  assert.equal(del.deleted, 1);
+  assert.equal((await s.host.getModelStatus()).downloaded, false);
+  delete process.env.SEEK_MCP_CHROMIUM_PROFILE;
+});

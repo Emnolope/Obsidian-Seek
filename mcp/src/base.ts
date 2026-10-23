@@ -3,7 +3,7 @@
 // (app state dir, device id, vault file listing, file reads, log stream). Core never sees any of this.
 import { createHash, randomBytes } from 'node:crypto';
 import { parse as parseYaml } from 'yaml';
-import { readFile, readdir, stat } from 'node:fs/promises';
+import { readFile, readdir, rm, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { FileAdapter } from '../../core/file-adapter.ts';
@@ -56,3 +56,28 @@ export function botLogger(vault: FileAdapter, deviceId: string): SeekLogger {
 
 // Obsidian hands the plugin parseYaml; Node has no equivalent, so the bot ships the `yaml` package for .base files.
 export function botParseYaml(raw: string): unknown { return parseYaml(raw); }
+
+// Where the sidecar's Chromium keeps its profile, and with it whatever model bytes the browser cached. The bot's stand-in for the plugin's Cache API.
+// Overridable so tests never touch a real profile.
+export const chromiumProfile = (): string => process.env.SEEK_MCP_CHROMIUM_PROFILE ?? '/tmp/obsidian-seek-mcp-chromium';
+// A fresh headless profile is a few MB; the quantized Granite model is ~100 MB. This tells "the model is in there" from "Chromium ran once".
+export const MODEL_PRESENT_MB = 50;
+
+export async function footprint(dir: string): Promise<{ bytes: number; files: number }> {
+    let bytes = 0, files = 0;
+    const walk = async (d: string): Promise<void> => {
+        for (const e of await readdir(d, { withFileTypes: true }).catch(() => [])) {
+            const p = join(d, e.name);
+            if (e.isDirectory()) await walk(p);
+            else { files++; bytes += (await stat(p).catch(() => null))?.size ?? 0; }
+        }
+    };
+    await walk(dir);
+    return { bytes, files };
+}
+
+export async function removeDir(dir: string): Promise<number> {
+    const { files } = await footprint(dir);
+    await rm(dir, { recursive: true, force: true });
+    return files;
+}

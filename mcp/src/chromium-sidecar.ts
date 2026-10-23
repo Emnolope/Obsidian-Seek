@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
 import { once } from 'node:events';
 import { buildChildScript } from '../../core/child-script.ts';
+import { chromiumProfile } from './base.ts';
 
 type CdpResponse = { id?: number; result?: any; error?: { message?: string } };
 
@@ -131,7 +132,7 @@ export class ChromiumSidecar {
     this.browser = spawn(executable, [
       ...(options.headless === false ? [] : ['--headless=new']),
       '--no-sandbox', '--disable-dev-shm-usage', '--remote-debugging-port=0',
-      '--user-data-dir=/tmp/obsidian-seek-mcp-chromium', 'about:blank',
+      `--user-data-dir=${chromiumProfile()}`, 'about:blank',
     ], { stdio: 'pipe' });
     const browserError = new Promise<never>((_, reject) => {
       this.browser!.once('error', error => reject(new Error(`Unable to start Chromium: ${error.message}`)));

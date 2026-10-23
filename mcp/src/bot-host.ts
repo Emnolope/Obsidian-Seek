@@ -50,7 +50,9 @@ import type { QuantVec } from '../../core/quant.ts';
 import type { IndexCompleteEntry, IndexProgressEntry, MemorySnapshot } from '../../core/types.ts';
 import type { BotEmbedder } from './bot-embedder.ts';
 import type { NodeIndexStore } from './node-index-store.ts';
-import { botLogger, vaultFiles, readVaultFile, botParseYaml } from './base.ts';
+import { botLogger, vaultFiles, readVaultFile, botParseYaml, footprint, removeDir, chromiumProfile, MODEL_PRESENT_MB } from './base.ts';
+import { getIndexStats as getIndexStatsCore, getModelStatus as getModelStatusCore, deleteModel as deleteModelCore, type IndexStats, type ModelStatus, type ModelPorts } from '../../core/index-stats.ts';
+import { activeModelSpec } from '../../core/model-registry.ts';
 import { extractBaseDocs } from '../../core/base-extractor.ts';
 import { mineLinkPairsByPath } from './link-miner.ts';
 
@@ -528,6 +530,36 @@ export class BotHost {
       now: () => performance.now(),
     };
   }
+  // fork 1.1.3 src/main.ts:1447 SeekPlugin.getIndexStats (body in core/index-stats.ts; storage comes from the files the bot owns, not navigator.storage)
+  async getIndexStats(): Promise<IndexStats> {
+    return getIndexStatsCore({
+      store: this.store, logger: this.logger,
+      storage: async () => {
+        const index = (await footprint(this.stateDir)).bytes / 1e6, model = (await footprint(chromiumProfile())).bytes / 1e6;
+        return { total: index + model, index, model };
+      },
+    });
+  }
+  // fork 1.1.3 src/main.ts:1507 SeekPlugin.getModelStatus (body in core/index-stats.ts)
+  async getModelStatus(): Promise<ModelStatus> { return getModelStatusCore(this.modelPorts()); }
+  // fork 1.1.3 src/main.ts:1539 SeekPlugin.deleteModel (body in core/index-stats.ts)
+  async deleteModel(): Promise<{ deleted: number }> { return deleteModelCore(this.modelPorts()); }
+
+  // The bot's model bytes are whatever its Chromium cached in the profile dir. `embedderLoaded` is false on purpose: BotEmbedder.loaded is
+  // always true (lazy sidecar), which says nothing about what is on disk, so the answer has to come from the profile's size.
+  // fork 1.1.3 new; relates to src/main.ts:1507 SeekPlugin.getModelStatus (the plugin's ports read the Cache API and the iframe)
+  private modelPorts(): ModelPorts {
+    return {
+      spec: activeModelSpec(this.settings),
+      probe: async () => ({ downloaded: (await footprint(chromiumProfile())).bytes / 1e6 >= MODEL_PRESENT_MB, persisted: null }),
+      embedderLoaded: () => false,
+      logger: this.logger,
+      // Close the browser first: it would rewrite its profile on the way out.
+      deleteCaches: async () => { await this.embedder.recycle(); return removeDir(chromiumProfile()); },
+      teardown: () => this.embedder.recycle(),
+    };
+  }
+
   // fork 1.1.3 src/search.ts:4299 SearchOrchestrator.warmCaches
   async warmCaches(trigger: string): Promise<void> { await this.filesReady(); return this.res.warmCaches(trigger); }
   invalidateBm25Cache(): void { this.res.invalidateBm25Cache(); }

@@ -16,6 +16,9 @@ const usage = `Usage:
   seek-mcp delta <vaultDir> [--json]      embed only changed notes
   seek-mcp hydrate <vaultDir> [--json]    adopt vectors other devices synced, no model
   seek-mcp compact <vaultDir> [--json]    compact and coalesce the bot's sidecar shards
+  seek-mcp stats <vaultDir> [--json]      counts, disk footprint, last-index times for the bot's own index
+  seek-mcp model <vaultDir> [--json]      is the embedding model on disk
+  seek-mcp delete-model <vaultDir>        delete the model the bot's browser cached
 
 Reads (status, search, chunk, note) use the bot's own index once it has chunks, else the human's export snapshot.
 `;
@@ -134,7 +137,13 @@ async function run(args: Arguments): Promise<void> {
     print(args.json ? vector : vector.join(','), args.json);
     return;
   }
-  const WRITE_OPS: Record<string, string> = { index: 'index_vault', delta: 'index_delta', hydrate: 'hydrate_sidecar', compact: 'compact_sidecar' };
+  const WRITE_OPS: Record<string, string> = { index: 'index_vault', delta: 'index_delta', hydrate: 'hydrate_sidecar', compact: 'compact_sidecar', 'delete-model': 'delete_model' };
+  const STAT_OPS: Record<string, 'getIndexStats' | 'getModelStatus'> = { stats: 'getIndexStats', model: 'getModelStatus' };
+  if (STAT_OPS[args.command]) {
+    const [dir] = requiredPositionals(args, 1);
+    print(JSON.stringify(await (await openBotSession(dir, queryEmbedder.chromium)).host[STAT_OPS[args.command]](), null, 2), args.json);
+    return;
+  }
   if (WRITE_OPS[args.command]) {
     const [dir] = requiredPositionals(args, 1);
     const out = await runWrite(await openBotSession(dir, queryEmbedder.chromium), WRITE_OPS[args.command]);

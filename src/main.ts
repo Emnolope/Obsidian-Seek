@@ -21,6 +21,7 @@ import type { App } from 'obsidian';
 import { LocalEmbedder, LOCAL_MODEL, LEGACY_ENGLISH_MODEL_ID, EMBEDDING_DIM } from './embedder';
 import { activeModelSpec, resolveOverrideSpec, evictStaleModelCaches, deleteModelCaches, probeModelDownloaded } from './model-registry';
 import { pluginIdentity } from './identity';
+import { getIndexStats as getIndexStatsCore, getModelStatus as getModelStatusCore, deleteModel as deleteModelCore, type IndexStats, type ModelStatus, type ModelPorts } from '../core/index-stats';
 import { sweepOrphanTmpFiles } from './sidecar';
 import type { SeekSettings, IndexCompleteEntry, ModelDeliveryEntry, SearchEntry, ScoredChunk, Device } from './types';
 import { DEFAULT_SETTINGS, migrateSettings } from './types';
@@ -82,42 +83,8 @@ const UNLOAD_CHECK_MS = 60 * 1000;
 
 
 
-// DTOs returned to the settings tab by getIndexStats() / getModelStatus(). Defined
-// here (not types.ts) because they describe this plugin's read API; settings-tab.ts
-// imports them as types.
-export interface IndexStats {
-    files: number;
-    chunks: number;
-    // storageMB = navigator.storage.estimate().usage — the WHOLE origin (index + model
-    // + every other plugin's storage); kept as a fallback. indexMB / modelMB split it via
-    // the non-standard usageDetails ({ indexedDB, caches }) that Electron/Chromium exposes:
-    // indexedDB ≈ the vector index, caches ≈ the transformers-cache model bytes. Both are
-    // origin-shared (other plugins' IDB/Cache count too), but Seek dominates each, so the
-    // split is a far more honest read than the conflated total. null when unavailable.
-    storageMB: number | null;
-    indexMB: number | null;
-    modelMB: number | null;
-    // "Last full index" is sourced from the most recent index-complete log entry whose
-    // mode is 'full' — timestamp + duration come from the SAME run, so they always agree
-    // (the prior code mixed meta's any-mode timestamp with the log's any-mode duration,
-    // which let a 2-file catch-up's 2.0s masquerade as a full reindex). Null if no full
-    // run survives in the (rotatable) log.
-    lastFullAt: string | null;
-    lastFullDurationMs: number | null;
-    // Last index of ANY mode (incremental catch-ups included), from store meta. Shown as
-    // a secondary "updated …" line when it post-dates the full reindex.
-    lastUpdatedAt: string | null;
-    // True once the index has a calibrated dense background (bgMean/bgStd present,
-    // σ>0) — the precondition for a non-null match strength. Gates the "Display
-    // scores" toggle: scores can't be shown on an uncalibrated corpus.
-    calibrated: boolean;
-}
-export interface ModelStatus {
-    downloaded: boolean;
-    persisted: boolean | null;
-    name: string;
-    dim: number;
-}
+// DTOs returned to the settings tab by getIndexStats() / getModelStatus(); they live in core/index-stats.ts now, re-exported so settings-tab.ts is unchanged.
+export type { IndexStats, ModelStatus } from '../core/index-stats';
 
 export default class SeekPlugin extends Plugin {
     private embedder = new LocalEmbedder();
@@ -1444,137 +1411,42 @@ export default class SeekPlugin extends Plugin {
         return this.life.runFullReindex(opts);
     }
 
-    // Index health snapshot for the settings Index status card. Read-only; gathers the
-    // private store + logger so the settings tab needs no plugin internals. Counts come
-    // from the index store, on-disk bytes from the Storage API (iOS-safe), the last-index
-    // timestamp from index meta (persisted), and its duration from the newest index-complete
-    // log entry (logged only). Each source is independently guarded so a single failure
-    // degrades one field rather than blanking the whole card.
+    // fork 1.1.3 src/main.ts:1447 SeekPlugin.getIndexStats (body in core/index-stats.ts)
     async getIndexStats(): Promise<IndexStats> {
-        let files = 0, chunks = 0;
-        try { const c = await this.store.count(); files = c.files; chunks = c.chunks; } catch { /* index not open yet */ }
-        let storageMB: number | null = null, indexMB: number | null = null, modelMB: number | null = null;
-        if (navigator.storage?.estimate) {
-            try {
+        return getIndexStatsCore({
+            store: this.store, logger: this.logger,
+            storage: async () => {
+                if (!navigator.storage?.estimate) return null;
                 const est = await navigator.storage.estimate();
-                storageMB = est.usage != null ? est.usage / 1e6 : null;
-                // usageDetails is non-standard but present in Electron/Chromium: per-bucket
-                // bytes ({ indexedDB, caches, ... }). Split the origin total into the index
-                // (IndexedDB) vs the model cache (Cache API) so the card stops implying the
-                // whole origin is the index.
-                const details = (est as { usageDetails?: Record<string, number> }).usageDetails;
-                if (details) {
-                    if (typeof details.indexedDB === 'number') indexMB = details.indexedDB / 1e6;
-                    if (typeof details.caches === 'number') modelMB = details.caches / 1e6;
-                }
-            } catch { /* unsupported */ }
-        }
-        // Last FULL reindex: newest index-complete entry with mode==='full'. Taking the
-        // stamp AND the duration from that one entry keeps them coherent — a later
-        // incremental catch-up (mode==='incremental') is skipped, so its tiny duration
-        // never gets shown as if it were a full rebuild.
-        let lastFullAt: string | null = null;
-        let lastFullDurationMs: number | null = null;
-        try {
-            const entries = await this.logger.readAll();
-            for (let i = entries.length - 1; i >= 0; i--) {
-                if (entries[i].type !== 'index-complete') continue;
-                const ic = entries[i] as IndexCompleteEntry;
-                if (ic.mode !== 'full') continue;
-                // A user-paused pass (design B) committed only part of the corpus — it
-                // is not a completed full index, so it must not stamp "last full index".
-                // Its remainder finishes via an incremental resume, which never claims a
-                // full stamp either; the next uninterrupted full reindex sets it cleanly.
-                if (ic.paused) continue;
-                lastFullAt = ic.timestamp;
-                lastFullDurationMs = ic.totalDurationMs;
-                break;
-            }
-        } catch { /* log unreadable */ }
-        // Last index of ANY mode (meta is rewritten on every reindex + delta) → "updated".
-        // The same meta carries the dense background stats: a calibrated corpus has
-        // bgMean/bgStd with σ>0 (mirrors SearchOrchestrator.getDenseBgStats).
-        let lastUpdatedAt: string | null = null;
-        let calibrated = false;
-        try {
-            const meta = await this.store.getMeta();
-            lastUpdatedAt = meta.lastIndexedAt;
-            calibrated = meta.bgMean != null && meta.bgStd != null && meta.bgStd > 0;
-        } catch { /* meta unreadable */ }
-        return { files, chunks, storageMB, indexMB, modelMB, lastFullAt, lastFullDurationMs, lastUpdatedAt, calibrated };
-    }
-
-    // Embedding-model DOWNLOAD status for the settings Model section — distinct from
-    // "loaded into memory" (which the search modal signals ambiently, so settings does
-    // not repeat it). Tries the parent-side Cache-API probe first; because parent
-    // visibility into the iframe's cache is unproven on iPhone (the cacheSeen canary),
-    // it falls back to a definitely-loaded embedder, then to the last model-delivery log
-    // entry that recorded cacheSeen>0 — either implies the bytes are on disk. Never throws.
-    async getModelStatus(): Promise<ModelStatus> {
-        const spec = activeModelSpec(this.settings);
-        const name = spec.repo.includes('/') ? spec.repo.split('/')[1] : spec.repo;
-        let downloaded = false, persisted: boolean | null = null;
-        if (typeof caches !== 'undefined') {
-            const st = await probeModelDownloaded(caches, spec);
-            downloaded = st.downloaded; persisted = st.persisted;
-        }
-        if (!downloaded) {
-            if (this.embedder.loaded) {
-                downloaded = true;
-            } else {
-                try {
-                    const entries = await this.logger.readAll();
-                    for (let i = entries.length - 1; i >= 0; i--) {
-                        if (entries[i].type === 'model-delivery') {
-                            if ((entries[i] as ModelDeliveryEntry).cacheSeen > 0) downloaded = true;
-                            break;
-                        }
-                    }
-                } catch { /* log unreadable */ }
-            }
-        }
-        return { downloaded, persisted, name, dim: spec.dim };
-    }
-
-    // User-invoked "Delete model" (settings). Removes the active model's ~100 MB of
-    // Cache-API bytes (the inverse of the switch-time evictStaleModelCaches), drops the
-    // in-memory copy, and records a model-delivery entry with cacheSeen:0 so the three
-    // sources getModelStatus() reads — Cache probe, loaded embedder, last delivery log —
-    // all agree the model is gone. The next search re-downloads it. Best-effort +
-    // parent-side: on iPhone, where the parent may not see the iframe's cache (the
-    // cacheSeen canary), the bytes can survive until reload, same caveat as eviction.
-    async deleteModel(): Promise<{ deleted: number }> {
-        const spec = activeModelSpec(this.settings);
-        let deleted = 0;
-        try {
-            if (typeof caches !== 'undefined') {
-                deleted = (await deleteModelCaches(caches, spec.repo)).deleted;
-            }
-        } catch (e) {
-            await this.logger.appendError('model-delete', e);
-            throw e instanceof Error ? e : new Error(String(e));
-        } finally {
-            // Drop the runtime copy on ANY delete attempt — even a partial one. The iframe
-            // holds the model in memory and getModelStatus() counts a loaded embedder as
-            // "downloaded"; keeping it resident over a (possibly half-) deleted on-disk cache
-            // would misreport state. teardown() also forces the next search to rebuild the
-            // iframe and re-fetch cleanly — the intended consequence of a delete.
-            this.embedder.teardown();
-        }
-        // Keep the log fallback honest: after a delete our cache holds 0 entries, so record
-        // that — else the previous load's cacheSeen>0 would still read back as "downloaded".
-        await this.logger.append({
-            type: 'model-delivery',
-            timestamp: new Date().toISOString(),
-            key: spec.key,
-            repo: spec.repo,
-            revision: spec.revision,
-            persisted: null,
-            cacheSeen: 0,
-            cacheEvicted: deleted,
+                // usageDetails is non-standard but present in Electron/Chromium: per-bucket bytes ({ indexedDB, caches, ... }).
+                const d = (est as { usageDetails?: Record<string, number> }).usageDetails;
+                return {
+                    total: est.usage != null ? est.usage / 1e6 : null,
+                    index: typeof d?.indexedDB === 'number' ? d.indexedDB / 1e6 : null,
+                    model: typeof d?.caches === 'number' ? d.caches / 1e6 : null,
+                };
+            },
         });
-        return { deleted };
     }
+
+    // fork 1.1.3 src/main.ts:1507 SeekPlugin.getModelStatus (body in core/index-stats.ts)
+    async getModelStatus(): Promise<ModelStatus> { return getModelStatusCore(this.modelPorts()); }
+
+    // The Cache-API and iframe ends of the model status/delete verbs: parent-side, best-effort on iPhone (see the cacheSeen canary).
+    private modelPorts(): ModelPorts {
+        const spec = activeModelSpec(this.settings);
+        return {
+            spec,
+            probe: async () => typeof caches !== 'undefined' ? probeModelDownloaded(caches, spec) : null,
+            embedderLoaded: () => this.embedder.loaded,
+            logger: this.logger,
+            deleteCaches: async () => typeof caches !== 'undefined' ? (await deleteModelCaches(caches, spec.repo)).deleted : 0,
+            teardown: () => this.embedder.teardown(),
+        };
+    }
+
+    // fork 1.1.3 src/main.ts:1539 SeekPlugin.deleteModel (body in core/index-stats.ts)
+    async deleteModel(): Promise<{ deleted: number }> { return deleteModelCore(this.modelPorts()); }
 
     // ---- Global observers ----
 

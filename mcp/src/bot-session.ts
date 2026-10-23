@@ -56,6 +56,7 @@ export async function runWrite(s: BotSession, op: string): Promise<unknown> {
       const d = await s.host.computeDelta();
       return { delta: { dirty: d.dirty.length, deleted: d.deleted.length }, ...(await s.host.reindexDelta(d.dirty, d.deleted, { embed: true })) };
     }
+    if (op === 'delete_model') return await s.host.deleteModel();
     if (op === 'hydrate_sidecar') return await s.host.reconcileSidecarIfChanged() ?? { skipped: 'sidecar unchanged or disabled' };
     if (op === 'compact_sidecar') return { compact: await s.host.compactOwnSidecar(), coalesce: await s.host.coalesceOwnSidecar() };
     throw new Error(`unknown write tool: ${op}`);
