@@ -71,3 +71,16 @@ test('the core lifecycle drives the bot: a created note is flushed into the inde
   assert.equal(await s.host.verifyCoherent(), true);
   assert.ok((await s.host.indexedChunkCount())! >= 2);
 });
+
+test('routing: the bot store answers once it has chunks; a text+vector call falls back to the snapshot path', async () => {
+  const { liveReader } = await import('../src/bot-route.ts');
+  process.env.SEEK_MCP_STATE = await mkdtemp(join(tmpdir(), 'seek-st-'));
+  const root = await mkdtemp(join(tmpdir(), 'seek-sv-'));
+  await mkdir(join(root, '.obsidian/plugins/seek'), { recursive: true });
+  await writeFile(join(root, 'a.md'), `# a\n\n${'alpha text here '.repeat(40)}\n`);
+  const s = await openBotSession(root, sidecar);
+  assert.equal(await liveReader(s, {}), null, 'empty store defers to the snapshot');
+  await runWrite(s, 'index_vault');
+  assert.equal(await liveReader(s, { queryText: 'alpha' }), s.reader);
+  assert.equal(await liveReader(s, { queryText: 'alpha', queryVector: [1] }), null);
+});
