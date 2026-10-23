@@ -37,11 +37,11 @@ const indexable = (p: string, bases: boolean): boolean => p.endsWith('.md') || (
 const hidden = (p: string): boolean => p.split('/').some(seg => seg.startsWith('.') || seg === 'node_modules');
 
 // fork 1.1.3 new; relates to src/main.ts:1452 SeekPlugin.wireIncrementalIndexing (Obsidian's vault events; here fs.watch, recursive where the platform allows)
-export function watchVault(vaultDir: string, life: IndexLifecycle, settings: SeekSettings): { stop(): void } {
+export function watchVault(vaultDir: string, life: IndexLifecycle, settings: SeekSettings, excluded: (path: string) => boolean = () => false): { stop(): void } {
   const w: FSWatcher = watch(vaultDir, { recursive: true }, (_ev, name) => {
     if (!name) return;
     const p = name.split(sep).join('/');
-    if (hidden(p) || !indexable(p, settings.indexBases)) return;
+    if (hidden(p) || !indexable(p, settings.indexBases) || excluded(p)) return;
     const mtime = (() => { try { return statSync(join(vaultDir, p)).mtimeMs; } catch { return -1; } })();
     if (mtime < 0) life.onDelete(p); else void life.enqueueIfDirty(p, mtime);
   });

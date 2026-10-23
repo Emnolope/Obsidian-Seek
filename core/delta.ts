@@ -31,6 +31,17 @@ export function shouldIndexPath(settings: Pick<SeekSettings, 'honorIgnoredFolder
     return true;
 }
 
+// fork 1.1.3 src/search.ts:103 isUserIgnored (the userIgnoreFilters fallback branch, lifted whole: a host with no metadataCache.isUserIgnored matches the raw list itself)
+// `/pattern/` is a regex; anything else is a file or folder prefix.
+export function matchUserIgnoreFilters(filters: readonly string[], path: string): boolean {
+    return filters.some(filter => {
+        if (filter.length > 1 && filter.startsWith('/') && filter.endsWith('/')) {
+            try { return new RegExp(filter.slice(1, -1)).test(path); } catch { return false; }
+        }
+        return path === filter || path.startsWith(filter.endsWith('/') ? filter : filter + '/');
+    });
+}
+
 // fork 1.1.3 src/search.ts:1573 SearchOrchestrator.chunksFor
 // Content → chunks for one file, branching by extension. A .base file isn't markdown, it's a YAML view definition, so it goes through the host's base
 // extractor (one synthetic doc per view, which needs a YAML parser the host owns) + chunkBase. Every chunk-PRODUCTION site routes through here so the

@@ -84,3 +84,16 @@ test('routing: the bot store answers once it has chunks; a text+vector call fall
   assert.equal(await liveReader(s, { queryText: 'alpha' }), s.reader);
   assert.equal(await liveReader(s, { queryText: 'alpha', queryVector: [1] }), null);
 });
+
+test('Obsidian\'s Excluded files (app.json userIgnoreFilters) keep notes out of the bot index: folder prefix and /regex/', async () => {
+  process.env.SEEK_MCP_STATE = await mkdtemp(join(tmpdir(), 'seek-st-'));
+  const root = await mkdtemp(join(tmpdir(), 'seek-sv-'));
+  await mkdir(join(root, '.obsidian/plugins/seek'), { recursive: true });
+  await mkdir(join(root, 'Archive'));
+  await writeFile(join(root, '.obsidian/app.json'), JSON.stringify({ userIgnoreFilters: ['Archive/', '/^drafts-/'] }));
+  const body = `\n\n${'alpha text here '.repeat(40)}\n`;
+  for (const p of ['keep.md', 'Archive/old.md', 'drafts-x.md']) await writeFile(join(root, p), `# t${body}`);
+  const s = await openBotSession(root, sidecar);
+  await runWrite(s, 'index_vault');
+  assert.deepEqual((await s.store.listFileRecords()).map(r => r.note_path), ['keep.md']);
+});

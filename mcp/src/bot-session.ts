@@ -6,6 +6,7 @@ import { numericKeysFromTypesJson, resolveSettings } from '../../core/memory-hos
 import { BotHost } from './bot-host.ts';
 import { BotReader } from './bot-reader.ts';
 import { botLifecycle, watchVault } from './bot-lifecycle.ts';
+import { matchUserIgnoreFilters } from '../../core/delta.ts';
 import type { IndexLifecycle } from '../../core/index-lifecycle.ts';
 import { BotEmbedder, type BatchSidecar } from './bot-embedder.ts';
 import { NodeIndexStore } from './node-index-store.ts';
@@ -26,14 +27,18 @@ export async function openBotSession(vaultDir: string, sidecar: BatchSidecar): P
   try { raw = JSON.parse(await readFile(join(root, '.obsidian/plugins/seek/data.json'), 'utf8')); } catch { /* defaults */ }
   let types: unknown;
   try { types = JSON.parse(await readFile(join(root, '.obsidian/types.json'), 'utf8')); } catch { /* none: no numeric props */ }
+  let app: unknown;
+  try { app = JSON.parse(await readFile(join(root, '.obsidian/app.json'), 'utf8')); } catch { /* none: nothing excluded */ }
+  const f = (app as { userIgnoreFilters?: unknown } | undefined)?.userIgnoreFilters;
+  const ignoreFilters = Array.isArray(f) ? f.filter((x): x is string => typeof x === 'string') : [];
   const store = new NodeIndexStore(`seek-index:${deviceId}`, state);
   await store.open();
   const settings = resolveSettings(raw);
   const logger = botLogger(vault, deviceId);
-  const host = new BotHost({ vaultDir: root, vault, stateDir, store, embedder: new BotEmbedder(sidecar), logger, settings, numericKeys: numericKeysFromTypesJson(types) });
+  const host = new BotHost({ vaultDir: root, vault, stateDir, store, embedder: new BotEmbedder(sidecar), logger, settings, numericKeys: numericKeysFromTypesJson(types), ignoreFilters });
   const life = botLifecycle(root, host, store, logger, settings);
   // Opt-in: a watcher that embeds in the background is the user's call (battery), not a default.
-  if (process.env.SEEK_MCP_WATCH === '1') { await life.reconcileOnLoad(); watchVault(root, life, settings); }
+  if (process.env.SEEK_MCP_WATCH === '1') { await life.reconcileOnLoad(); watchVault(root, life, settings, p => settings.honorIgnoredFolders && matchUserIgnoreFilters(ignoreFilters, p)); }
   return { host, store, reader: new BotReader(host, store), life, deviceId };
 }
 

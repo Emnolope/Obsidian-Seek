@@ -10,7 +10,7 @@ import { runSearch, runDenseSearch, type SearchHost, type SearchOverride, type E
 import { binaryCandidates } from '../../core/binary.ts';
 import { frameBm25Coherent } from '../../core/search-helpers.ts';
 import { MarkdownChunker } from '../../core/chunker.ts';
-import { chunksFor as chunksForCore, computeDelta, shouldIndexPath as shouldIndexPathCore, UnreadableQuarantine, type LiveFile } from '../../core/delta.ts';
+import { chunksFor as chunksForCore, computeDelta, shouldIndexPath as shouldIndexPathCore, matchUserIgnoreFilters, UnreadableQuarantine, type LiveFile } from '../../core/delta.ts';
 import { planFileDiff } from '../../core/file-diff.ts';
 import { embedAndCommit, type EmbedCommitCtx, type SidecarFlushJob } from '../../core/embed-commit.ts';
 import { applyDelta as applyDeltaCore } from '../../core/apply-delta.ts';
@@ -72,6 +72,7 @@ export interface BotHostInit {
   embedder: BotEmbedder;
   logger: Logger;
   settings: SeekSettings;
+  ignoreFilters?: string[];  // Obsidian's "Excluded files" (.obsidian/app.json userIgnoreFilters); honored when settings.honorIgnoredFolders
   numericKeys?: Set<string>; // Obsidian's declared Number props (.obsidian/types.json); the bot has no property registry
 }
 
@@ -87,6 +88,7 @@ export class BotHost {
   private logger: Logger;
   private settings: SeekSettings;
   private numericKeys: Set<string>;
+  private ignoreFilters: string[];
   private forensics = null;
   private chunker = new MarkdownChunker();
   private coord: IndexCoordinator;
@@ -106,7 +108,7 @@ export class BotHost {
   // fork 1.1.3 src/search.ts:291 SearchOrchestrator.constructor
   constructor(init: BotHostInit) {
     this.vaultDir = init.vaultDir; this.vault = init.vault; this.stateDir = init.stateDir; this.store = init.store;
-    this.embedder = init.embedder; this.logger = init.logger; this.settings = init.settings; this.numericKeys = init.numericKeys ?? new Set();
+    this.embedder = init.embedder; this.logger = init.logger; this.settings = init.settings; this.numericKeys = init.numericKeys ?? new Set(); this.ignoreFilters = init.ignoreFilters ?? [];
     this.coord = new IndexCoordinator('.obsidian/plugins/seek/index', init.settings);
     this.res = new ResidentIndex(this.residentPorts());
   }
@@ -126,7 +128,7 @@ export class BotHost {
   // fork 1.1.3 new; no method counterpart: vault.cachedRead(file) in the plugin, called inline at each read site
   private readFile(f: LiveFile<string>): Promise<string> { return readVaultFile(this.vaultDir)(f); }
   // fork 1.1.3 src/search.ts:1547 SearchOrchestrator.shouldIndex
-  private shouldIndex(path: string): boolean { return shouldIndexPathCore(this.settings, path, () => false); }
+  private shouldIndex(path: string): boolean { return shouldIndexPathCore(this.settings, path, p => matchUserIgnoreFilters(this.ignoreFilters, p)); }
   // fork 1.1.3 src/search.ts:1573 SearchOrchestrator.chunksFor
   private chunksFor(content: string, path: string, modifiedIso: string | null): Chunk[] {
     return chunksForCore(this.chunker, (c, p) => extractBaseDocs(c, p, botParseYaml), content, path, modifiedIso);
