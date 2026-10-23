@@ -17,7 +17,11 @@ test('write verbs run through a session; the store survives reopening from the s
   await mkdir(join(root, '.obsidian/plugins/seek'), { recursive: true });
   await writeFile(join(root, 'a.md'), `# a\n\n${'alpha text here '.repeat(40)}\n`);
   const s = await openBotSession(root, sidecar);
-  await runWrite(s, 'index_vault');
+  const full = await runWrite(s, 'index_vault') as any;
+  assert.equal(full.ran, true);
+  assert.equal(full.health, 'healthy');
+  assert.equal(full.paused, false);
+  assert.ok(full.filesIndexed >= 1, 'pass numbers still reported: ' + JSON.stringify(full));
   const n = (await s.store.count()).chunks;
   assert.ok(n >= 1);
   assert.deepEqual((await runWrite(s, 'index_delta') as any).delta, { dirty: 0, deleted: 0 });

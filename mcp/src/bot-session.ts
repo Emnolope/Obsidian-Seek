@@ -10,6 +10,7 @@ import type { IndexLifecycle } from '../../core/index-lifecycle.ts';
 import { BotEmbedder, type BatchSidecar } from './bot-embedder.ts';
 import { NodeIndexStore } from './node-index-store.ts';
 import { nodeFileAdapter } from './node-file-adapter.ts';
+import type { IndexCompleteEntry } from '../../core/types.ts';
 import { botDeviceId, botLogger, stateDirFor } from './base.ts';
 
 export interface BotSession { host: BotHost; store: NodeIndexStore; reader: BotReader; life: IndexLifecycle; deviceId: string }
@@ -39,7 +40,13 @@ export async function openBotSession(vaultDir: string, sidecar: BatchSidecar): P
 // The write verbs the MCP exposes; each is the human command's twin and ends by flushing the local store to disk.
 export async function runWrite(s: BotSession, op: string): Promise<unknown> {
   try {
-    if (op === 'index_vault') return await s.host.reindexAll();
+    if (op === 'index_vault') {
+      // Through the lifecycle so the pause latch and health reset behave as for the human's "Full reindex" command.
+      s.host.lastReindex = null;
+      const ran = await s.life.runFullReindex({ skipConfirm: true });
+      const r = s.host.lastReindex as IndexCompleteEntry | null; // TS keeps the null assigned above across the await
+      return { ...r, ran, paused: s.life.indexPaused, health: s.life.indexHealth };
+    }
     if (op === 'index_delta') {
       const d = await s.host.computeDelta();
       return { delta: { dirty: d.dirty.length, deleted: d.deleted.length }, ...(await s.host.reindexDelta(d.dirty, d.deleted, { embed: true })) };

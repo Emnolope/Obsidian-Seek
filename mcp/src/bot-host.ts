@@ -228,7 +228,7 @@ export class BotHost {
   async reindexAll(onProgress?: (msg: string) => void, opts: { shouldContinue?: () => boolean; isPaused?: () => boolean } = {}): Promise<IndexCompleteEntry> {
     const o = this;
     const files = await this.indexableFiles();
-    return reindexAllCore<string>({
+    return this.lastReindex = await reindexAllCore<string>({
       coord: o.coord, store: o.storeForReset(), embedder: o.embedder, logger: o.logger, forensics: o.forensics, unreadable: o.unreadable,
       EMBEDDING_DIM, nukeDatabase: async () => { const n = await o.store.clear(); return { chunks: n.chunks, embeddings: n.embeddings, files: n.files }; },
       indexableFiles: () => withLiveMtime(files), shouldIndex: p => o.shouldIndex(p),
@@ -238,6 +238,10 @@ export class BotHost {
       exportMcpAfterSuccessfulCommit: async () => {}, quotaToast: () => o.quotaToast(), warmCaches: t => o.warmCaches(t),
     }, onProgress, opts);
   }
+
+  // IndexLifecycle.runFullReindex returns only whether the pass ran; the MCP tool reports the pass's numbers too.
+  // fork 1.1.3 new; no method counterpart: the plugin shows these in the notice runFullReindex raises
+  lastReindex: IndexCompleteEntry | null = null;
 
   // The reset path closes and reopens the store; the in-memory twin has nothing to release, so open/close are cheap no-ops.
   // fork 1.1.3 new; relates to src/search.ts:344 SearchOrchestrator.reindexAll (the plugin closes and reopens IndexedDB on reset; the in-memory twin has nothing to release)
