@@ -1,6 +1,9 @@
 // new (our tree, not upstream); relates to src/mcp-export.ts:14 exportMcpIndex (same join of metas, bodies and file records, read live from the bot's store instead of a snapshot)
 // The read side over the bot's own store. Same method names and output shapes as SeekIndex, so the server swaps one for the other.
 import type { ChunkMeta, ScoredChunk } from '../../core/types.ts';
+import { EXPORT_SCHEMA_VERSION } from '../../core/contract.ts';
+import { ACTIVE_MODEL_SPEC } from '../../core/model-registry.ts';
+import { CHUNKER_VERSION } from '../../core/chunker.ts';
 import type { BotHost } from './bot-host.ts';
 import type { NodeIndexStore } from './node-index-store.ts';
 import type { FetchedChunk, SearchHit, SearchQuery } from './index.ts';
@@ -27,7 +30,14 @@ export class BotReader {
   async status() {
     const c = await this.store.count();
     const meta = await this.store.getMeta();
-    return { source: 'bot-store', loadedChunks: c.chunks, files: c.files, lastIndexedAt: meta.lastIndexedAt, dimension: meta.embeddingDim };
+    // Same keys SeekIndex.status() returns (ExportMeta + loadedChunks + diagnostics), so a caller can't tell which source answered except by `source`.
+    // The live store has no export step to disagree with, so nothing is skipped or orphaned.
+    return {
+      source: 'bot-store', schemaVersion: EXPORT_SCHEMA_VERSION, generation: `bot-store:${this.host.currentGeneration()}`,
+      modelId: ACTIVE_MODEL_SPEC.repo, revision: ACTIVE_MODEL_SPEC.revision, chunkerVersion: CHUNKER_VERSION,
+      dimension: meta.embeddingDim, chunkCount: c.chunks, loadedChunks: c.chunks, files: c.files, lastIndexedAt: meta.lastIndexedAt,
+      diagnostics: { exportedDocuments: c.chunks, loadedDocuments: c.chunks, skippedDocuments: 0, orphanVectors: 0 },
+    };
   }
 
   async search(query: SearchQuery): Promise<SearchHit[]> {

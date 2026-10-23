@@ -47,6 +47,10 @@ test('what the bot indexes is searchable and fetchable from its own store', asyn
   assert.equal((await s.reader.chunk(hits[0].chunkId)).notePath, 'a.md');
   assert.ok((await s.reader.note('a.md')).length >= 1);
   assert.deepEqual(await s.reader.note('nope.md'), []);
+  const st = await s.reader.status() as Record<string, any>;
+  for (const k of ['schemaVersion', 'generation', 'modelId', 'revision', 'chunkerVersion', 'dimension', 'chunkCount', 'loadedChunks', 'diagnostics']) assert.ok(k in st, `status lacks ${k}`);
+  assert.equal(st.source, 'bot-store');
+  assert.equal(st.diagnostics.loadedDocuments, st.loadedChunks);
   assert.equal((await s.reader.search({ vector: new Array(384).fill(0).map((_, i) => (i === 0 ? 1 : 0)), topK: 1 })).length, 1);
   await writeFile(join(root, 'b.md'), `# b\n\n${'zebra stripes here '.repeat(40)}\n`);
   await runWrite(s, 'index_delta');
