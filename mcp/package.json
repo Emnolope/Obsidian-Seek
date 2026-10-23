@@ -22,7 +22,8 @@
   },
   "dependencies": {
     "onnxruntime-common": "1.24.0-dev.20251116-b39e144322",
-    "onnxruntime-web": "1.26.0-dev.20260416-b7804b056c"
+    "onnxruntime-web": "1.26.0-dev.20260416-b7804b056c",
+    "yaml": "^2.9.1"
   },
   "files": [
     "dist",

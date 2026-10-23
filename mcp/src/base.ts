@@ -2,7 +2,7 @@
 // BASE layer for the bot: the Node-side answers to what Obsidian gives the plugin for free
 // (app state dir, device id, vault file listing, file reads, log stream). Core never sees any of this.
 import { createHash, randomBytes } from 'node:crypto';
-import { createRequire } from 'node:module';
+import { parse as parseYaml } from 'yaml';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -54,9 +54,5 @@ export function botLogger(vault: FileAdapter, deviceId: string): SeekLogger {
     return new SeekLogger({ adapter: vault, device: { get: k => kv.get(k) ?? null, set: (k, v) => { kv.set(k, v); }, remove: k => { kv.delete(k); } }, platform: 'bot' }, 'seek');
 }
 
-// Obsidian hands the plugin parseYaml; the bot uses the `yaml` package when it is installed. Without it this throws, which core's extractor treats as a
-// malformed file: the .base is still indexed by name, just without its filter literals. Adding the dependency is a call for the owner (bundle size).
-export function botParseYaml(raw: string): unknown {
-    const yaml = createRequire(import.meta.url)('yaml') as { parse(s: string): unknown };
-    return yaml.parse(raw);
-}
+// Obsidian hands the plugin parseYaml; Node has no equivalent, so the bot ships the `yaml` package for .base files.
+export function botParseYaml(raw: string): unknown { return parseYaml(raw); }

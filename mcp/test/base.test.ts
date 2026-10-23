@@ -44,3 +44,11 @@ test('logger appends stamped ndjson rows under the plugin log dir', async () => 
   assert.equal(rows[0].deviceId, 'bot-deadbeef');
   assert.equal(rows[0].type, 'error');
 });
+
+test('link miner finds piped wikilinks the way metadataCache would: skips frontmatter, code, embeds, plain links; honors \\| and anchors', async () => {
+  const { scanWikiLinks, extractPipedPairs } = await import('../../core/link-dict.ts');
+  const md = ['---', 'x: "[[Fm|nope]]"', '---', 'See [[Query Understanding|QU]] and [[Query Understanding#Intro|QU]] and [[Plain]].',
+    '`[[Code|inline]]` ![[Embed|e]]', '```', '[[Fence|nope]]', '```', '| a |', '| [[Table Note\\|TN]] |'].join('\n');
+  const pairs = extractPipedPairs(scanWikiLinks(md));
+  assert.deepEqual(pairs.map(p => [p.target, p.display, p.count]).sort(), [['Query Understanding', 'QU', 2], ['Table Note', 'TN', 1]]);
+});

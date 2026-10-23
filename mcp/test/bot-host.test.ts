@@ -73,3 +73,20 @@ test('an edit goes through computeDelta + reindexDelta and re-embeds only the ch
   const rec = await a.store.getFileRecord('beta.md');
   assert.ok(rec && (await a.store.getBodiesByIds([rec.chunk_ids[0]]))[0]?.includes('gamma'));
 });
+
+test('bot indexes .base files with a real YAML parse and builds the link dictionary from piped wikilinks', async () => {
+  const { root } = await makeVault();
+  await writeFile(join(root, 'links.md'), '# Links\n\nWe call it [[Query Understanding|QU]] here. ' + 'filler words '.repeat(60) + '\n');
+  await writeFile(join(root, 'Tasks.base'), 'views:\n  - type: table\n    name: Open tasks\n    filters:\n      and:\n        - status == "zebrafish"\n');
+  const a = await bot(root, 'bot-aaaaaaaa');
+  (a.host as unknown as { settings: { indexBases: boolean } }).settings.indexBases = true;
+  await a.host.reindexAll();
+  const rec = await a.store.getFileRecord('Tasks.base');
+  assert.ok(rec, '.base file indexed');
+  const bodies = await a.store.getBodiesByIds(rec!.chunk_ids);
+  assert.ok(bodies.join(' ').includes('zebrafish'), 'YAML filter literal reached the chunk: ' + bodies.join('|'));
+  await a.host.search('qu');
+  const cache = (a.host as unknown as { res: { ensurePhraseCache(): unknown; linkPairCache: Map<string, { display: string }[]> | null } }).res;
+  cache.ensurePhraseCache();
+  assert.deepEqual([...(cache.linkPairCache ?? new Map()).entries()].map(([p, v]) => [p, v[0].display]), [['links.md', 'QU']]);
+});

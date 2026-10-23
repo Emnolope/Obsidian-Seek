@@ -52,6 +52,7 @@ import type { BotEmbedder } from './bot-embedder.ts';
 import type { NodeIndexStore } from './node-index-store.ts';
 import { botLogger, vaultFiles, readVaultFile, botParseYaml } from './base.ts';
 import { extractBaseDocs } from '../../core/base-extractor.ts';
+import { mineLinkPairsByPath } from './link-miner.ts';
 
 const MODEL_ID = ACTIVE_MODEL_SPEC.repo;
 const EMBEDDING_DIM = ACTIVE_MODEL_SPEC.dim;
@@ -164,6 +165,7 @@ export class BotHost {
 
   // fork 1.1.3 src/search.ts:3307 SearchOrchestrator.search
   async search(query: string, topK = 10, override?: SearchOverride, expOverride?: ExperimentOverride): Promise<{ results: ScoredChunk[]; entry: SearchEntry }> {
+    await this.filesReady();
     return runSearch(this.searchHost(), query, topK, override, expOverride);
   }
 
@@ -344,8 +346,13 @@ export class BotHost {
       generation: () => this.coord.generation, bumpGeneration: () => this.coord.bumpGeneration(),
       stamp: n => this.res.stampBm25Cache(n),
       setSynonyms: m => { this.res.synonymCache = m; },
-      // No link dictionary on the bot: it mines Obsidian's metadataCache, which has no Node twin.
-      patchLinkPairs: () => {},
+      // fork 1.2.1 src/search.ts:2379 SearchOrchestrator.applyDelta (link-pair patch; the bot parses the markdown itself, see link-miner.ts)
+      patchLinkPairs: touchedPaths => {
+        const cache = this.res.linkPairCache;
+        if (!cache) return;
+        const mined = mineLinkPairsByPath(this.vaultDir, touchedPaths, p => this.shouldIndex(p));
+        for (const p of touchedPaths) { const pairs = mined.get(p); if (pairs) cache.set(p, pairs); else cache.delete(p); }
+      },
       fallback: (reason, detail) => this.deltaFallback(reason, detail),
       logError: (tag, e) => this.logger.appendError(tag, e),
     }, adds, removedIds, removedBodies, metaPatches);
@@ -454,6 +461,8 @@ export class BotHost {
   private cachedFiles: LiveFile<string>[] = [];
   // fork 1.1.3 new; relates to src/search.ts:1557 SearchOrchestrator.indexableFiles (the oracles take a synchronous lister, so the bot refreshes a cache before each oracle-driven pass)
   async refreshFiles(): Promise<void> { this.cachedFiles = await this.indexableFiles(); }
+  // The link-dictionary miner reads cachedFiles synchronously; a search before any index pass would mine an empty list and cache it.
+  private async filesReady(): Promise<void> { if (this.cachedFiles.length === 0) await this.refreshFiles(); }
 
   // fork 1.1.3 src/search.ts:2994 SearchOrchestrator.hydrateDeps
   private hydrateDeps(reChunk: () => Promise<ReChunkedNote[]>, addsSink?: DeltaAdd[]): HydrateDeps<FileAdapter> {
@@ -508,12 +517,12 @@ export class BotHost {
       peerOn: () => false,
       peerBm25: async () => null,
       publishBm25: null,
-      mineLinkPairs: () => new Map(),
+      mineLinkPairs: () => mineLinkPairsByPath(o.vaultDir, o.cachedFiles.map(f => f.path), p => o.shouldIndex(p)),
       logError: (c, e) => o.logger.appendError(c, e),
       now: () => performance.now(),
     };
   }
   // fork 1.1.3 src/search.ts:4299 SearchOrchestrator.warmCaches
-  warmCaches(trigger: string): Promise<void> { return this.res.warmCaches(trigger); }
+  async warmCaches(trigger: string): Promise<void> { await this.filesReady(); return this.res.warmCaches(trigger); }
   invalidateBm25Cache(): void { this.res.invalidateBm25Cache(); }
 }

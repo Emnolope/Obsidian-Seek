@@ -95,3 +95,22 @@ export function aggregateLinkPairs(perFile: Iterable<LinkPairCount[]>): LinkPair
     }
     return [...acc.values()];
 }
+
+// fork 1.2.1 new; relates to src/link-dict.ts:46 mineLinkPairsByPath (Obsidian hands the plugin parsed LinkCache entries; a host with no metadataCache has to parse the raw markdown)
+// Mirrors what LinkCache.links holds: wikilinks outside frontmatter, fenced code and inline code. Embeds (`![[...]]`) live in
+// `embeds`, not `links`, so they're skipped. `\|` (the table-safe pipe) counts as a pipe and is dropped from the target, as Obsidian does.
+const WIKILINK = /(!?)\[\[([^\[\]|\n]*?)(\\?\|[^\[\]\n]*)?\]\]/g;
+export function scanWikiLinks(md: string): RawLink[] {
+    const body = md.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, '')
+        .replace(/^( {0,3})(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^ {0,3}\2[`~]*[ \t]*$|(?![\s\S]))/gm, '')
+        .replace(/(`+)[^`\n]*?\1/g, '');
+    const out: RawLink[] = [];
+    for (const m of body.matchAll(WIKILINK)) {
+        if (m[1]) continue;
+        const link = m[2].trim();
+        const pipe = m[3];
+        const display = pipe ? pipe.replace(/^\\?\|/, '') : undefined;
+        out.push({ link, displayText: display ?? link, original: m[0] });
+    }
+    return out;
+}
