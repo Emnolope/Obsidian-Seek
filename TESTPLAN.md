@@ -1,6 +1,6 @@
 # Seek test pathway: paired human and bot specifications
 
-Status: specification only. The two scripts in `tests/device/` (section 1) predate the rules below and must be rewritten to follow them (see "Known violations").
+Status: specification only. There are no tests yet. The bot writes them from this document, and puts every test file it writes in `tests/device/` (human-side console scripts and bot-side scripts side by side, plus the runner and the diff tool). Earlier tests were deleted on purpose: do not look for them in git history or copy their approach (fixture vault, quiet output).
 
 ## Read this first: the three rules
 
@@ -366,11 +366,9 @@ The rule is that nothing human-only should exist without a bot equivalent. Each 
 
 At each tier the bot runs first, then the human, then the two result files are diffed.
 
-## Known violations in what is already written (`tests/device/`, section 1)
+## Where the tests live
 
-- It uses a fixture vault written by the script (`seed`, `--vault` defaulting to a seeded temp dir). Under rule 1 it must take a real vault, derive expectations from it (L2.1, L2.2, L2.9), and stop seeding.
-- It is quiet: it prints a table of PASS/FAIL and returns no value from the console path. Under rule 2 it must print every step and assertion, return a verdict, include the canary, and write a log file.
-- Its test ids (`T0.1`, `T0.2`, `T2.1`, `T2.2`, `T2.3`) map to `L0.1`, `L2.2`, `L2.9`, `L2.2`/`L2.4`, `L2.3`.
+All tests, the runner and the human/bot diff tool go in `tests/device/`. Name files by tier (`l0-l3.bot.mjs`, `l0-l3.human.js`, and so on), so the order in the directory matches the order in this plan.
 
 ## Release note
 
