@@ -11,9 +11,11 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 
-const targetVersion = process.env.npm_package_version;
+// Our dev versions (<upstream>.99.<n>, see PROVENANCE.md "Versioning") are not valid semver, so npm
+// cannot own them: pass one as an argument (`node version-bump.mjs 1.2.1.99.5`) and leave package.json alone.
+const targetVersion = process.argv[2] ?? process.env.npm_package_version;
 if (!targetVersion) {
-    console.error("npm_package_version not set — run via `npm version`, not directly.");
+    console.error("usage: node version-bump.mjs <version>  (or run via `npm version`)");
     process.exit(1);
 }
 

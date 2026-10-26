@@ -14,6 +14,16 @@ Porting an upstream change: `git diff 1.1.3 ryan/main`, then for each touched fu
 
 Add the comment whenever code is moved. Keep original names; if a name must change, the pointer is what keeps the mapping.
 
+## Versioning
+
+Our releases are `<upstream version>.99.<n>`: Ryan's current version, then `99`, then our own counter. Example: `1.2.1.99.5` is our fifth release, built on upstream 1.2.1. (`1.2.1.99.4` was never published; `n` only counts versions that shipped.)
+
+- The first three segments say which upstream state the code was last merged with (see the merge table below). When an upstream sync lands, the prefix moves (`1.2.2.99.6`) and `n` keeps counting; it never resets, so our releases stay in order across syncs.
+- `99` marks it as ours. A five-part version can never equal one of Ryan's three-part tags, so releases cannot collide.
+- `manifest.json` `version` is the single source of truth, and the git tag and GitHub release must equal it exactly (Obsidian and BRAT match on that, no leading `v`).
+- It is not valid semver, so `npm version` cannot set it. Run `node version-bump.mjs <version>` (updates `manifest.json` and `versions.json`), tag by hand, and leave `package.json` at the upstream base. The plugin only compares the string for equality (index records, `classifyFileDelta`), so nothing parses it.
+- Unverified: whether BRAT accepts a five-part version. If it refuses to install or update, fall back to a semver-legal form that still carries the same information (`1.2.1-99.4` sorts below 1.2.1, `1.2.1+99.4` ignores the suffix when comparing) and record the change here.
+
 ## Upstream merges
 
 Each upstream sync is a real merge commit with `ryan/main` as second parent, so `git log --graph` shows it and `git rev-list --count HEAD..ryan/main` returns 0 afterwards. Because our tree is restructured, the merge uses `-s ours` and the upstream changes are ported by hand into that same commit (git cannot carry a diff across a moved function). Do the port first, commit last: the merge commit asserts that every upstream change is accounted for.
