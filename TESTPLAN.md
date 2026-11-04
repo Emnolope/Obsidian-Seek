@@ -28,7 +28,7 @@ The point of these tests is diagnosis: we do not know which parts of the code wo
 - **Report one of four outcomes**, never silence:
   - `PASS`
   - `FAIL` (with the failing assertions repeated in the summary)
-  - `BLOCKED` (a precondition is unmet; the line names which one, e.g. `BLOCKED: index has 0 chunks, run L7.2 first`)
+  - `BLOCKED` (a precondition is unmet; the line names which one, e.g. `BLOCKED: index has 0 chunks, run L4.2 first`)
   - `SKIP` (not applicable on this platform, with the reason)
   A gate that is not met is `BLOCKED`, never a pass and never a fail. This is what keeps "search a vault with zero embeddings" from producing a meaningless result.
 - **Time itself** (milliseconds per test, and per step for anything over 100 ms).
@@ -42,7 +42,7 @@ The point of these tests is diagnosis: we do not know which parts of the code wo
 
 Running a search is not one operation. It sits on top of: reading files, parsing them, cutting them into chunks, loading a model, turning chunks into vectors, storing the vectors, building a lexical index, and only then ranking. Each of those can be broken independently. So the tiers go from the bottom up, and a test in tier N may only depend on things proven in tiers below N. If a lower tier fails, the tests above it that depend on it are reported `BLOCKED`, not run.
 
-The consequence for a vault with **no embeddings** (the music vault today): tiers L0 to L6 can all be run and passed. L3 will print that the index is empty. L7 (the first indexing) creates the embeddings. Only after L7 do the dense-search tiers have anything to search; before that they report `BLOCKED: index has 0 chunks`. Lexical (BM25) search is different: it needs chunks but no embeddings, so it is proven in L5, before the model is even loaded.
+The consequence for a vault with **no embeddings** (the music vault today): tiers L0 to L4 can all be run and passed. L6.3 will report that the index is empty. L4 (the first indexing) creates the embeddings. Only after L4 do the dense-search tiers have anything to search; before that they report `BLOCKED: index has 0 chunks`. Lexical (BM25) search is different: it needs chunks but no embeddings, so it is proven in L3, before the model is even loaded.
 
 ---
 
@@ -88,21 +88,21 @@ A `SKIP` names the rule that found nothing. Real vaults may not contain every ca
 - H and B: print the vault name, absolute path (B) or adapter base path (H), count of files by extension, total bytes, and the five largest files.
 - *Pass:* the bot's `--vault` and the human's open vault are the same vault: equal file counts and total bytes (if they are deliberately different copies, the banner says so and the parity checks that follow compare like with like). *Parity:* the counts.
 
-## L1: Process and protocol plumbing (READ-ONLY)
+## L4: Process and protocol plumbing (READ-ONLY)
 
-**L1.1 Start and stop.**
+**L4.1 Start and stop.**
 - H: disable then enable the plugin; count intervals/listeners before and after (no leak).
 - B: start `server.mjs`, confirm it idles on stdin, exits cleanly when stdin closes; start it twice against one state dir without corruption.
 
-**L1.2 Front door.**
+**L4.2 Front door.**
 - H: command ids (`seek:search`, `seek-export-mcp-index`) resolve in `app.commands.commands`.
 - B: `initialize` returns server info; `tools/list` returns exactly the 11 expected tools with valid schemas.
 
-**L1.3 Bad input.**
+**L4.3 Bad input.**
 - H: search with empty string, 10,000 characters, operators only: no throw.
 - B: malformed JSON, unknown method, unknown tool, missing `vaultDir`, wrong argument types: each gives a JSON-RPC error and the server stays up.
 
-**L1.4 PicoClaw registration.**
+**L4.4 PicoClaw registration.**
 - B: `picoclaw mcp add ... ` works and the agent lists the tools. (Human equivalent: the plugin appears in Community plugins and its settings tab opens.)
 
 ## L2: Vault read primitives (READ-ONLY, the "just read files" tier)
@@ -124,7 +124,7 @@ A `SKIP` names the rule that found nothing. Real vaults may not contain every ca
 
 **L2.5 Frontmatter and properties.**
 - H: Obsidian's parsed properties for `props`. B: the bot's parse. *Parity:* normalized property maps.
-- Numeric properties typed per `.obsidian/types.json`.
+Numeric properties typed per `.obsidian/types.json`.
 
 **L2.6 Links.**
 - H: `metadataCache` links for `linky` and `fenced`. B: `scanWikiLinks`. *Pass:* same targets; none from inside code fences or frontmatter.
@@ -140,57 +140,57 @@ A `SKIP` names the rule that found nothing. Real vaults may not contain every ca
 - H: `indexableFiles` filtered by `shouldIndex`. B: the same two functions on `BotHost`.
 - *Pass:* the sets are equal. Print the count and the first and last five. This is the list every later tier is built from.
 
-## L3: Configuration and state (READ-ONLY)
+## L5: Configuration and state (READ-ONLY)
 
-**L3.1 Settings load.**
+**L5.1 Settings load.**
 - H: `data.json` migrates, merges with defaults; print the effective settings. B: the same file through the same migrate+merge.
 - *Parity:* effective settings JSON.
 
-**L3.2 Identity.**
+**L5.2 Identity.**
 - H: plugin device id stable across a reload. B: `bot-xxxxxxxx` stable across a restart and stored in the state dir, **not** in the vault.
 
-**L3.3 Cold index report (the empty-vault test).**
+**L5.3 Cold index report (the empty-vault test).**
 - H: `getIndexStats`. B: `index_stats`. Print every field.
 - *Pass:* no throw, same shape. If counts are zero this test **passes** and prints `INDEX EMPTY: dense search, hydrate and fetch tiers will be BLOCKED until L7 runs`. This is how a vault with no embeddings (the music vault) is recognized up front, instead of failing mysteriously in search.
 
-**L3.4 Model status report.**
+**L5.4 Model status report.**
 - H: `getModelStatus`. B: `model_status`. Print every field and the heuristic inputs (bytes found).
 
-**L3.5 State directory.**
+**L5.5 State directory.**
 - B: the state dir exists, is writable, is outside the vault, and survives a restart. H: IndexedDB opens, a probe write/read/delete round-trips.
 
-## L4: Pure transforms on real notes (READ-ONLY, no model, no store)
+## L1: Pure transforms on real notes (READ-ONLY, no model, no store)
 
-**L4.1 Tokenizer.** H and B: tokenize `sample20`; print token counts. *Parity:* counts per note.
+**L1.1 Tokenizer.** H and B: tokenize `sample20`; print token counts. *Parity:* counts per note.
 
-**L4.2 Chunker.** H and B: chunk `sample20`, including `fenced`, `large`, `empty`.
+**L1.2 Chunker.** H and B: chunk `sample20`, including `fenced`, `large`, `empty`.
 - Print chunks per note, first 80 characters of the first and last chunk.
 - *Oracle:* invariants: concatenated chunk text covers the note's non-whitespace content; no chunk exceeds the token budget except documented atomic blocks (oversize fence/table); `empty` yields zero chunks.
 - *Parity:* chunk count and chunk text hashes per note.
 
-**L4.3 Chunk ids.** Stable across two runs, unique across the sample. *Parity:* ids.
+**L1.3 Chunk ids.** Stable across two runs, unique across the sample. *Parity:* ids.
 
-**L4.4 Token budget.** `large` is split, not truncated silently. Print how.
+**L1.4 Token budget.** `large` is split, not truncated silently. Print how.
 
-**L4.5 Query parser.** Plain text, quoted phrase, `#tag`, `path:`, `[key:value]`, `before:`/`after:`, unknown operator, trailing operator. Print the parsed object for each. *Parity:* parsed objects.
+**L1.5 Query parser.** Plain text, quoted phrase, `#tag`, `path:`, `[key:value]`, `before:`/`after:`, unknown operator, trailing operator. Print the parsed object for each. *Parity:* parsed objects.
 
-**L4.6 Property typing and tag grammar.** Tags with nesting and unicode, numeric and date properties normalize the same way on both sides.
+**L1.6 Property typing and tag grammar.** Tags with nesting and unicode, numeric and date properties normalize the same way on both sides.
 
-**L4.7 Link dictionary build.** Over `sample20`, build the link/synonym dictionary. *Parity:* entries.
+**L1.7 Link dictionary build.** Over `sample20`, build the link/synonym dictionary. *Parity:* entries.
 
-## L5: Lexical retrieval (READ-ONLY, needs L4, needs no embeddings)
+## L3: Lexical retrieval (READ-ONLY, needs L1, needs no embeddings)
 
 All of this runs on in-memory chunks of `sample20`, with no store and no model. It proves the half of search that does not depend on vectors.
 
-**L5.1 Build BM25.** Build the lexical index from the L4.2 chunks. Print document count, term count.
+**L3.1 Build BM25.** Build the lexical index from the L1.2 chunks. Print document count, term count.
 
-**L5.2 Known-answer lexical hit.** For three notes of `sample20`, take a rare word from the note (chosen by the test: the term with the lowest document frequency that appears in only that note) and query it. *Pass:* that note is the top hit. Print the top 5 with scores. *Parity:* ranked lists.
+**L3.2 Known-answer lexical hit.** For three notes of `sample20`, take a rare word from the note (chosen by the test: the term with the lowest document frequency that appears in only that note) and query it. *Pass:* that note is the top hit. Print the top 5 with scores. *Parity:* ranked lists.
 
-**L5.3 Phrase and operator filters.** `#tag`, `path:`, `[key:value]`, `before:`/`after:` over the in-memory chunks return exactly the notes the dumb recomputation says they should.
+**L3.3 Phrase and operator filters.** `#tag`, `path:`, `[key:value]`, `before:`/`after:` over the in-memory chunks return exactly the notes the dumb recomputation says they should.
 
-**L5.4 Fuzzy, title bonus, recency bonus.** Each toggle changes ranking as documented, on a constructed query from the vault's own words.
+**L3.4 Fuzzy, title bonus, recency bonus.** Each toggle changes ranking as documented, on a constructed query from the vault's own words.
 
-**L5.5 Empty and nonsense queries.** Return an empty result with a state flag, not an error.
+**L3.5 Empty and nonsense queries.** Return an empty result with a state flag, not an error.
 
 ## L6: The embedder (READ-ONLY on the vault; downloads and caches the model)
 
@@ -224,15 +224,15 @@ Everything above this line had no side effects on any index. L7 is where embeddi
 
 **L7.3 Atomic per-file commit.** Interrupt a commit (throw between chunk write and meta write); the file is either entirely old or entirely new. `verifyCoherent` true.
 
-**L7.4 Index `sample20` only.** H: index just those 20 notes. B: the same 20 via the bot's pass. Print per-file chunk count, embed time, total time. *Pass:* chunk counts equal L4.2; vectors equal across sides (cosine ≥ 0.999 per chunk). *Parity:* per-note chunk counts and ids.
+**L7.4 Index `sample20` only.** H: index just those 20 notes. B: the same 20 via the bot's pass. Print per-file chunk count, embed time, total time. *Pass:* chunk counts equal L1.2; vectors equal across sides (cosine ≥ 0.999 per chunk). *Parity:* per-note chunk counts and ids.
 
-**L7.5 Stats after sample.** `index_stats` / `getIndexStats` report exactly the 20 notes and the chunk total from L7.4; the empty-vault warning from L3.3 no longer fires.
+**L7.5 Stats after sample.** `index_stats` / `getIndexStats` report exactly the 20 notes and the chunk total from L7.4; the empty-vault warning from L5.3 no longer fires.
 
-**L7.6 Full index (explicit, long, optional per run).** The whole vault. Print progress every 100 files, ETA, memory. Not run by default; selected with `--full-index`. *Pass:* chunk total equals the sum of L4.2-style chunking over every indexable note (dumb recomputation), `verifyCoherent` true, ignored files contribute zero.
+**L7.6 Full index (explicit, long, optional per run).** The whole vault. Print progress every 100 files, ETA, memory. Not run by default; selected with `--full-index`. *Pass:* chunk total equals the sum of L2.4-style chunking over every indexable note (dumb recomputation), `verifyCoherent` true, ignored files contribute zero.
 
 ## L8: Index maintenance (WRITES: index, plus a throwaway note under `Seek Test/`)
 
-**L8.1 Coherence check.** `verifyCoherent` after every L7/L8 test; corrupt a BM25 frame stamp deliberately and confirm drift recovery repairs it.
+**L8.1 Coherence check.** `verifyCoherent` after every L7/L7 test; corrupt a BM25 frame stamp deliberately and confirm drift recovery repairs it.
 
 **L8.2 No-op delta.** With no changes, zero embeds, zero writes, report says clean.
 
@@ -242,7 +242,7 @@ Everything above this line had no side effects on any index. L7 is where embeddi
 
 **L8.5 Rename.** Rename a throwaway note; old path gone, new path present, chunk ids per the documented rule.
 
-**L8.6 Delete.** Delete both throwaway notes; their chunks disappear; counts return to the L7.5 numbers.
+**L8.6 Delete.** Delete both throwaway notes; their chunks disappear; counts return to the L8.5 numbers.
 
 **L8.7 Incremental equals full.** After L8.3 to L8.6, the index equals a from-scratch rebuild of the same set, exactly (the sharpest incremental-correctness test).
 
@@ -254,7 +254,7 @@ Everything above this line had no side effects on any index. L7 is where embeddi
 
 ## L9: Dense and hybrid search (READ-ONLY; GATED on the index having chunks)
 
-**Gate:** every test here begins `needs: index.chunks > 0` (printed and checked). With an empty index every test in L9 reports `BLOCKED: index has 0 chunks, run L7.4 first`. None of them may pass or fail in that state. Queries are built from the notes L7 actually indexed.
+**Gate:** every test here begins `needs: index.chunks > 0` (printed and checked). With an empty index every test in L7 reports `BLOCKED: index has 0 chunks, run L7.4 first`. None of them may pass or fail in that state. Queries are built from the notes L7 actually indexed.
 
 **L9.1 Dense primitives.** Cosine of a stored vector with itself is 1; with another note's vector is lower; binary-candidate stage returns a superset of the exact top-k (recall 100% on the indexed set).
 
@@ -262,7 +262,7 @@ Everything above this line had no side effects on any index. L7 is where embeddi
 
 **L9.3 Known-answer dense hit.** Use a chunk's own first sentence, reworded by simple deterministic transformation (reverse word order of the middle clause), as the query. *Pass:* the source note ranks in the top 3. Print top 10 with signals.
 
-**L9.4 Known-answer hybrid hit.** The rare-word query from L5.2 now through the full pipeline. *Pass:* same note on top, and the result carries BM25, dense and recency/title signals.
+**L9.4 Known-answer hybrid hit.** The rare-word query from L9.2 now through the full pipeline. *Pass:* same note on top, and the result carries BM25, dense and recency/title signals.
 
 **L9.5 Fusion and ranking parity.** For 10 deterministic queries, full ranked lists on the human and bot sides are compared. *Pass:* identical order, or every difference explained by a documented rule (e.g. hybrid `pathPrefix` filters after ranking on the bot).
 
@@ -272,7 +272,7 @@ Everything above this line had no side effects on any index. L7 is where embeddi
 
 **L9.8 No results.** Nonsense query returns empty with a clean flag.
 
-**L9.9 Fetch.** H: chunks for a note from the store. B: `fetch_note` and `fetch_chunk`. *Pass:* round trip: the fetched text equals the L4.2 chunk text; `includeVectors` returns 384 floats; missing note/id gives a clean not-found. *Parity:* ids and text hashes.
+**L9.9 Fetch.** H: chunks for a note from the store. B: `fetch_note` and `fetch_chunk`. *Pass:* round trip: the fetched text equals the L7.4 chunk text; `includeVectors` returns 384 floats; missing note/id gives a clean not-found. *Parity:* ids and text hashes.
 
 **L9.10 Response size.** `fetch_note` of `large` and a broad search stay under the stated bound (still an open TODO).
 
@@ -286,7 +286,7 @@ Needs a populated index on at least one side (L7.4). Print the sidecar path and 
 
 **L10.2 Bot writes, human reads.** `compact_sidecar` on the bot; the human reads and validates.
 
-**L10.3 Hydrate without re-embedding (human → bot).** Empty bot store, `hydrate_sidecar`. *Pass:* stats equal the human's; zero embeds run; L9 results equal.
+**L10.3 Hydrate without re-embedding (human → bot).** Empty bot store, `hydrate_sidecar`. *Pass:* stats equal the human's; zero embeds run; L7 results equal.
 
 **L10.4 Hydrate without re-embedding (bot → human).** Mirrored.
 
@@ -304,7 +304,7 @@ Needs a populated index on at least one side (L7.4). Print the sidecar path and 
 
 **L11.1 Live edit.** H: edit in the editor; debounce fires. B: with `SEEK_MCP_WATCH=1`, an on-disk edit triggers a delta. *Pass:* index current within the window; timing printed.
 
-**L11.2 Live rename and delete.** As L8.5 and L8.6 but triggered by events.
+**L11.2 Live rename and delete.** As L11.4 and L11.6 but triggered by events.
 
 **L11.3 Pause and resume.** No indexing while paused; backlog drains on resume.
 
@@ -318,7 +318,7 @@ Needs a populated index on at least one side (L7.4). Print the sidecar path and 
 
 **L11.8 Delete model.** `deleteModel` / `delete_model`; status flips; search degrades with a clear message; re-download restores.
 
-**L11.9 Resource ceilings.** Peak memory and wall time during L7.4 and (if run) L7.6, recorded as the phone baseline.
+**L11.9 Resource ceilings.** Peak memory and wall time during L11.4 and (if run) L11.6, recorded as the phone baseline.
 
 ## L12: Settings behavior (WRITES: settings file; restored at the end)
 
@@ -344,25 +344,25 @@ The rule is that nothing human-only should exist without a bot equivalent. Each 
 | L13.10 | Logging report | log stream / report tool: decide |
 | L13.11 | `seek:search` companion relay | human-only (document) |
 
-## L14: End-to-end loops (WRITES)
+## __TIER14__: End-to-end loops (WRITES)
 
 **L14.1 Human indexes, bot hydrates, bot searches.** Results equal the human's for the same queries.
 **L14.2 Bot indexes, human hydrates, human searches.** Mirrored.
 **L14.3 Concurrent edit.** Both sides index the same edit; after sync, one converged state.
 **L14.4 Real MCP client.** PicoClaw asks a natural-language question about the vault through `semantic_search`; the answer cites real files that exist and contain the claimed text.
-**L14.5 Installed release.** Install the plugin through BRAT and the bot from the tarball; run L0 to L9 against the installed versions, not the checkout.
+**L14.5 Installed release.** Install the plugin through BRAT and the bot from the tarball; run L0 to L4 against the installed versions, not the checkout.
 
 ---
 
 ## Order of execution
 
-1. L0 to L3: no model, no index, minutes. Safe to run on any vault, including one with zero embeddings (L3.3 will say so).
-2. L4, L5: transforms and lexical search. Still no model.
+1. L0 to L4: no model, no index, minutes. Safe to run on any vault, including one with zero embeddings (L4.3 will say so).
+2. L1, L2, L3: transforms and lexical search. Still no model.
 3. L6: the model (the first real-hardware unknown).
 4. L7.1 to L7.5: the store and the 20-note sample index. This is the first moment embeddings exist.
 5. L8, then L9: maintenance, then dense and hybrid search against the sample.
 6. L10, L11, L12: sidecar, live behavior, settings.
-7. L7.6 (full index), then repeat L9 on the full index, then L13, L14.
+7. L13, then L14.
 
 At each tier the bot runs first, then the human, then the two result files are diffed.
 
@@ -376,8 +376,8 @@ Obsidian and BRAT install by the GitHub release whose tag **exactly equals** `ma
 
 ## Open decisions
 
-- L13: for each counterpart marked "decide", add the capability or declare it human-only.
-- L10.7: fix the exporter location bug, or keep the test as an expected failure.
-- L6.8: if the model re-downloads on every bot start, the sidecar port must be made stable.
+- L4: for each counterpart marked "decide", add the capability or declare it human-only.
+- L4.7: fix the exporter location bug, or keep the test as an expected failure.
+- L4.8: if the model re-downloads on every bot start, the sidecar port must be made stable.
 - `includeVectors` default on or off is still unconfirmed.
-- Whether L7.6 (full index of a 5,600-note vault on the phone) is run on-device or hydrated from the human's index (L14.1). The earlier estimate for a full re-embed on the phone was about seven hours.
+- Whether L4.6 (full index of a 5,600-note vault on the phone) is run on-device or hydrated from the human's index (L4.1). The earlier estimate for a full re-embed on the phone was about seven hours.
