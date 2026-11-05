@@ -304,7 +304,7 @@ Needs a populated index on at least one side (L7.4). Print the sidecar path and 
 
 **L11.1 Live edit.** H: edit in the editor; debounce fires. B: with `SEEK_MCP_WATCH=1`, an on-disk edit triggers a delta. *Pass:* index current within the window; timing printed.
 
-**L11.2 Live rename and delete.** As L11.4 and L11.6 but triggered by events.
+**L11.2 Live rename and delete.** As L8.5 and L8.6 but triggered by events.
 
 **L11.3 Pause and resume.** No indexing while paused; backlog drains on resume.
 
