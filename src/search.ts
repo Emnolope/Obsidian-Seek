@@ -254,7 +254,7 @@ export class SearchOrchestrator {
     }
 
     private async exportMcpAfterSuccessfulCommit(mode: 'full' | 'incremental'): Promise<void> {
-        return exportMcpAfterSuccessfulCommitCore({ exportMcpIndex: () => exportMcpIndex(this.app.vault.adapter, this.store), forensics: this.forensics, logger: this.logger }, mode);
+        return exportMcpAfterSuccessfulCommitCore({ exportMcpIndex: () => exportMcpIndex(this.app.vault.adapter, this.store, this.coord.dir), forensics: this.forensics, logger: this.logger }, mode);
     }
 
     async reindexAll(onProgress?: (msg: string) => void, opts: { shouldContinue?: () => boolean; isPaused?: () => boolean } = {}): Promise<IndexCompleteEntry> {

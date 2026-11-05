@@ -6,7 +6,7 @@ import { mkdtemp, mkdir, readFile, writeFile, rm, rename, stat, readdir } from '
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { exportMcpIndex, MCP_EXPORT_DIR } from '../src/mcp-export';
+import { exportMcpIndex } from '../src/mcp-export';
 import { ACTIVE_MODEL_SPEC } from '../src/model-registry';
 import { SeekIndex } from '../mcp/src/index.ts';
 import { SEEK_MODEL } from '../mcp/src/seek-compatibility.ts';
@@ -34,10 +34,10 @@ function tier(axis: number): TierBytes {
     return { q, s: 1 / 127, sign: new Uint8Array(SIGN_BYTES) };
 }
 
-async function seed(chunks: Array<{ id: string; note: string; axis: number }>, tombstones: string[] = []) {
+async function seed(chunks: Array<{ id: string; note: string; axis: number }>, tombstones: string[] = [], dir = 'Seek Index') {
     const root = await mkdtemp(join(tmpdir(), 'seek-parity-'));
     dirs.push(root);
-    const indexDir = join(root, 'Seek Index');
+    const indexDir = join(root, dir);
     await mkdir(indexDir, { recursive: true });
     const bin = new Uint8Array(VEC_BYTES * chunks.length);
     chunks.forEach((c, i) => bin.set(encodeRecord(tier(c.axis)), i * VEC_BYTES));
@@ -52,19 +52,24 @@ async function seed(chunks: Array<{ id: string; note: string; axis: number }>, t
         listFileRecords: async () => chunks.map(c => ({ note_path: c.note, mtimeMs: 1, chunk_ids: [c.id] })),
         listAllEmbeddings: async () => ({ ids: chunks.map(c => c.id), vecs: chunks.map(() => ({})) }),
     } as never;
-    await exportMcpIndex(adapterAt(root), store);
+    await exportMcpIndex(adapterAt(root), store, dir);
     return indexDir;
 }
 
 describe('plugin writer ↔ MCP reader', () => {
     it('round-trips an export and ranks by the stored vectors', async () => {
         const indexDir = await seed([{ id: 'a', note: 'one.md', axis: 0 }, { id: 'b', note: 'dir/two.md', axis: 1 }]);
-        expect((await readdir(join(indexDir, '..', MCP_EXPORT_DIR.split('/')[0]))).includes('MCP Export')).toBe(true);
+        expect((await readdir(indexDir)).includes('MCP Export')).toBe(true);
         const idx = await SeekIndex.load(indexDir);
         const q = new Array(EMBEDDING_DIM).fill(0); q[1] = 1;
         expect((await idx.search({ vector: q, topK: 1 }))[0].chunkId).toBe('b');
         expect(idx.note('dir/two.md')[0].content).toBe('body b');
         expect(idx.status().diagnostics).toMatchObject({ exportedDocuments: 2, loadedDocuments: 2, skippedDocuments: 0 });
+    });
+
+    it('exports into the hidden config-mode sidecar dir, where the MCP loader looks', async () => {
+        const indexDir = await seed([{ id: 'a', note: 'one.md', axis: 0 }], [], '.obsidian/plugins/seek/index');
+        expect((await SeekIndex.load(indexDir)).documents.map(d => d.chunkId)).toEqual(['a']);
     });
 
     it('honors tombstones the same way the plugin does (MCP skips the deleted chunk)', async () => {

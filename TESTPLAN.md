@@ -333,18 +333,18 @@ The rule is that nothing human-only should exist without a bot equivalent. Each 
 | Test | Human capability | Bot counterpart |
 | --- | --- | --- |
 | L13.1 | Search modal: results, snippets, Enter opens the note at the chunk | `semantic_search` hit carries a snippet and a locator for the same place |
-| L13.2 | Result highlighting | none: decide, add highlight ranges or declare human-only |
-| L13.3 | Query field completions (`#`, `path:`) | none: decide, a `suggest` tool or declare human-only |
-| L13.4 | Insert link | none: decide, a `resolve_link` tool or declare human-only |
-| L13.5 | Recent searches (per device, per vault) | none: decide |
+| L13.2 | Result highlighting | REQUIRED, not built: hits carry highlight ranges (core/highlight.ts already exists). Until built this test reports FAIL: missing counterpart |
+| L13.3 | Query field completions (`#`, `path:`) | REQUIRED, not built: a `suggest` tool over the same completion source. FAIL until built |
+| L13.4 | Insert link | REQUIRED, not built: a `resolve_link` tool returning the same link text. FAIL until built |
+| L13.5 | Recent searches (per device, per vault) | REQUIRED, not built: the bot keeps per-device recents in its state dir and exposes them. FAIL until built |
 | L13.6 | Ribbon and progress notices | `index_vault` pass numbers; MCP progress notifications |
 | L13.7 | Display toggles (scores, hints, Cmd/Ctrl) | UI only |
 | L13.8 | Settings tab Index card | `index_stats` (verify fields equal) |
 | L13.9 | Settings tab Model section | `model_status`, `delete_model` (verify) |
-| L13.10 | Logging report | log stream / report tool: decide |
+| L13.10 | Logging report | REQUIRED, not built: a report tool over the shared `seek-log-<deviceId>.ndjson` stream. FAIL until built |
 | L13.11 | `seek:search` companion relay | human-only (document) |
 
-## __TIER14__: End-to-end loops (WRITES)
+## L14: End-to-end loops (WRITES)
 
 **L14.1 Human indexes, bot hydrates, bot searches.** Results equal the human's for the same queries.
 **L14.2 Bot indexes, human hydrates, human searches.** Mirrored.
@@ -374,10 +374,13 @@ All tests, the runner and the human/bot diff tool go in `tests/device/`. Name fi
 
 Obsidian and BRAT install by the GitHub release whose tag **exactly equals** `manifest.json` `version`, without a leading `v`. Our versions are `<upstream>.99.<n>`, which is not valid semver; see `PROVENANCE.md` "Versioning" for how to set one and for the unverified BRAT risk. Merging branches is not required: `main` and `monorepo-core` are the same commit.
 
-## Open decisions
+## Parity requirements still open
 
-- L4: for each counterpart marked "decide", add the capability or declare it human-only.
-- L4.7: fix the exporter location bug, or keep the test as an expected failure.
-- L4.8: if the model re-downloads on every bot start, the sidecar port must be made stable.
-- `includeVectors` default on or off is still unconfirmed.
-- Whether L4.6 (full index of a 5,600-note vault on the phone) is run on-device or hydrated from the human's index (L4.1). The earlier estimate for a full re-embed on the phone was about seven hours.
+The rule is one-way and settled: anything the human plugin can do, the bot must do (the reverse too). Items below are work, not questions.
+
+- **L13.2 to L13.5, L13.10:** build the bot counterparts listed in the L13 table. Deliberately human-only, and documented as such: display toggles (L13.7), ribbon and notices (UI only; the bot's counterpart is progress output), the `seek:search` relay (L13.11).
+- **L10.7 export location:** FIXED. The exporter writes `<active index dir>/MCP Export` in both `sidecarIndexLocation` modes. The test now asserts PASS in both modes.
+- **L6.8 model persistence:** the bot's Chromium profile now lives under the state base (not `/tmp`) and the sidecar binds a stable port (`SEEK_MCP_PORT`, default 47613) so the Cache API origin survives restarts. Still needs confirming on the phone: bytes downloaded on the second start must be 0.
+- **L10.8 Syncthing hydration:** open bug. Needs the phone's `seek-log-<deviceId>.ndjson` lines before any on-disk change.
+- **L7.6 full index on the phone:** run on-device, or hydrate from the human's index (L10.3). Hydrate is the default; the earlier estimate for a full phone re-embed was about seven hours.
+- **Owner call, not parity:** whether `includeVectors` defaults on (currently off, opt-in).

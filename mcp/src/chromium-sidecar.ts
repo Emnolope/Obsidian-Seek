@@ -109,6 +109,8 @@ export interface ChromiumSidecarOptions {
   headless?: boolean;
 }
 
+const STABLE_PORT = 47613;
+
 export class ChromiumSidecar {
   private browser: ChildProcessWithoutNullStreams | null = null;
   private server: Server | null = null;
@@ -123,8 +125,7 @@ export class ChromiumSidecar {
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
       response.end(html);
     });
-    this.server.listen(0, '127.0.0.1');
-    await once(this.server, 'listening');
+    await this.bind();
     const address = this.server.address();
     if (!address || typeof address === 'string') throw new Error('Chromium sidecar HTTP server failed to bind');
     const executable = options.executablePath ?? process.env.SEEK_CHROMIUM_PATH ?? 'chromium';
@@ -158,6 +159,21 @@ export class ChromiumSidecar {
     this.sessionId = attached.sessionId;
     await this.cdp.command('Runtime.enable', {}, this.sessionId);
     await this.waitForReady();
+  }
+
+  // Cache API is keyed by origin, so the origin must survive restarts or the model re-downloads each run. Fixed port first; a random one only if it is taken.
+  private async bind(): Promise<void> {
+    const want = Number(process.env.SEEK_MCP_PORT ?? STABLE_PORT);
+    for (const port of [want, 0]) {
+      try {
+        this.server!.listen(port, '127.0.0.1');
+        await once(this.server!, 'listening');
+        return;
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'EADDRINUSE' || port === 0) throw e;
+        console.error(`[seek-mcp] port ${port} busy; model cache will not persist this run`);
+      }
+    }
   }
 
   private async waitForReady(): Promise<void> {

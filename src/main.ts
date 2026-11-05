@@ -363,7 +363,7 @@ export default class SeekPlugin extends Plugin {
             id: 'seek-export-mcp-index',
             name: 'Export complete MCP index',
             callback: () => {
-                void exportMcpIndex(this.app.vault.adapter, this.store)
+                void exportMcpIndex(this.app.vault.adapter, this.store, sidecarIndexDir)
                     .then(meta => new Notice(`Seek: exported ${meta.chunkCount} chunks for MCP`))
                     .catch(error => new Notice(`Seek MCP export failed: ${error instanceof Error ? error.message : String(error)}`));
             },

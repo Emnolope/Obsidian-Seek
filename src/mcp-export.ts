@@ -6,12 +6,15 @@ import type { FileRecord, IndexStore } from './index-store';
 import { EXPORT_DIRNAME, EXPORT_DOCS_FILE, EXPORT_META_FILE, serializeDocuments, serializeMeta, type ExportDocument, type ExportMeta } from '../core/export';
 import { EXPORT_SCHEMA_VERSION } from '../core/contract';
 
-export const MCP_EXPORT_DIR = `Seek Index/${EXPORT_DIRNAME}`;
+// The export rides inside the active sidecar dir because that is where the MCP loader looks (SeekIndex.load joins EXPORT_DIRNAME onto the index root).
+// Fallback is the visible folder for installs with the sidecar off.
+export const FALLBACK_INDEX_DIR = 'Seek Index';
 
 export type McpExportDocument = ExportDocument;
 export type McpExportMeta = ExportMeta;
 
-export async function exportMcpIndex(adapter: DataAdapter, store: IndexStore): Promise<McpExportMeta> {
+export async function exportMcpIndex(adapter: DataAdapter, store: IndexStore, indexDir: string | null = null): Promise<McpExportMeta> {
+    const exportDir = `${indexDir ?? FALLBACK_INDEX_DIR}/${EXPORT_DIRNAME}`;
     const metas = await store.listAllMeta();
     const [bodies, files, embeddings] = await Promise.all([
         store.getBodiesMap(metas.map(meta => meta.chunk_id)),
@@ -49,11 +52,11 @@ export async function exportMcpIndex(adapter: DataAdapter, store: IndexStore): P
         dimension: ACTIVE_MODEL_SPEC.dim,
         chunkCount: documents.length,
     };
-    const temp = `${MCP_EXPORT_DIR}.tmp-${generation}`;
+    const temp = `${exportDir}.tmp-${generation}`;
     await adapter.mkdir(temp);
     await adapter.write(`${temp}/${EXPORT_DOCS_FILE}`, serializeDocuments(documents));
     await adapter.write(`${temp}/${EXPORT_META_FILE}`, serializeMeta(exportMeta));
-    if (await adapter.exists(MCP_EXPORT_DIR)) await adapter.remove(MCP_EXPORT_DIR);
-    await adapter.rename(temp, MCP_EXPORT_DIR);
+    if (await adapter.exists(exportDir)) await adapter.remove(exportDir);
+    await adapter.rename(temp, exportDir);
     return exportMeta;
 }

@@ -11,10 +11,10 @@ import type { LiveFile } from '../../core/delta.ts';
 import { SeekLogger, DEVICE_ID_KEY } from '../../core/logger.ts';
 
 // The bot's IndexedDB-equivalent lives here, never in the vault. One dir per vault, like IDB's per-vault scope.
+const stateBase = (env: Record<string, string | undefined>): string => env.SEEK_MCP_STATE ?? join(env.XDG_STATE_HOME ?? join(homedir(), '.local/state'), 'seek-mcp');
 export function stateDirFor(vaultDir: string, env: Record<string, string | undefined> = process.env): string {
     const key = createHash('sha1').update(resolve(vaultDir)).digest('hex').slice(0, 12);
-    const base = env.SEEK_MCP_STATE ?? join(env.XDG_STATE_HOME ?? join(homedir(), '.local/state'), 'seek-mcp');
-    return join(base, key);
+    return join(stateBase(env), key);
 }
 
 // Per-install id in the same shape as the plugin's mobile-/desktop- ids; it names this device's sidecar shard.
@@ -59,7 +59,8 @@ export function botParseYaml(raw: string): unknown { return parseYaml(raw); }
 
 // Where the sidecar's Chromium keeps its profile, and with it whatever model bytes the browser cached. The bot's stand-in for the plugin's Cache API.
 // Overridable so tests never touch a real profile.
-export const chromiumProfile = (): string => process.env.SEEK_MCP_CHROMIUM_PROFILE ?? '/tmp/obsidian-seek-mcp-chromium';
+// Under the state base, not /tmp: /tmp is wiped on reboot (and absent on Termux), which silently re-downloaded ~100 MB. Shared across vaults because the model is the same.
+export const chromiumProfile = (env: Record<string, string | undefined> = process.env): string => env.SEEK_MCP_CHROMIUM_PROFILE ?? join(stateBase(env), 'chromium');
 // A fresh headless profile is a few MB; the quantized Granite model is ~100 MB. This tells "the model is in there" from "Chromium ran once".
 export const MODEL_PRESENT_MB = 50;
 
