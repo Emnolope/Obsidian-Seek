@@ -2,6 +2,11 @@
 
 All notable changes to Seek are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+- **`obsidian seek:embed text="..." [format=json]` prints the embedding vector for any text.** It uses the same on-device model and query path as search, with no search involved. JSON output includes the dimension and norm.
+
 ## 1.2.1
 
 ### Added

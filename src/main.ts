@@ -16,6 +16,7 @@
 //   - No model-cache management
 //   - No MCP wrapper
 
+import { embedCliReply } from './embed-cli';
 import { Modal, Notice, Plugin, TFile } from 'obsidian';
 import type { App } from 'obsidian';
 import { LocalEmbedder, LOCAL_MODEL, LEGACY_ENGLISH_MODEL_ID, EMBEDDING_DIM } from './embedder';
@@ -693,6 +694,32 @@ export default class SeekPlugin extends Plugin {
                             lines.push('');
                         });
                         return lines.join('\n').replace(/\n+$/, '');
+                    } catch (err) {
+                        return fail(err instanceof Error ? err.message : String(err));
+                    }
+                },
+            );
+
+            // Raw text → vector, no search. Read-only like seek:search, and a CLI verb (not a palette command) per the note above.
+            registerCliHandler.call(
+                this,
+                'seek:embed',
+                'Seek embed text with the on-device model and print the vector',
+                {
+                    text: { value: '<text>', description: 'Text to embed (embedded as a query, the same path a search takes)', required: true },
+                    format: { value: 'text|json', description: 'Output format (default: text; json for programmatic use)', required: false },
+                },
+                async (args: Record<string, string | boolean | undefined>): Promise<string> => {
+                    const text = typeof args.text === 'string' ? args.text : '';
+                    const asJson = args.format === 'json';
+                    const fail = (msg: string): string => asJson ? JSON.stringify({ error: msg }) : `Seek error: ${msg}`;
+                    if (!text) return fail('text is required');
+                    try {
+                        const { vector } = await this.withQueryInFlight(async () => {
+                            await this.ensureModelLoaded();
+                            return this.embedder.embed(text);
+                        });
+                        return embedCliReply(text, vector, asJson);
                     } catch (err) {
                         return fail(err instanceof Error ? err.message : String(err));
                     }
