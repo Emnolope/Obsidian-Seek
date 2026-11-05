@@ -16,6 +16,7 @@
 //   - No model-cache management
 //   - No MCP wrapper
 
+import { exportIndex } from './index-export';
 import { Modal, Notice, Plugin, TFile } from 'obsidian';
 import type { App } from 'obsidian';
 import { LocalEmbedder, LOCAL_MODEL, LEGACY_ENGLISH_MODEL_ID, EMBEDDING_DIM } from './embedder';
@@ -496,6 +497,15 @@ export default class SeekPlugin extends Plugin {
         // existing index off it into the literal path on upgrade.
         const legacySidecarDir = this.manifest.dir ? `${this.manifest.dir}/index` : null;
         this.orchestrator = new SearchOrchestrator(this.app, this.store, this.embedder, this.logger, this.settings, this.forensics, sidecarIndexDir, this.taskCtx);
+        this.addCommand({
+            id: 'export-index',
+            name: 'Export complete index',
+            callback: () => {
+                void exportIndex(this.app.vault.adapter, this.store, sidecarIndexDir)
+                    .then(meta => new Notice(`Seek: exported ${meta.chunkCount} chunks`))
+                    .catch(error => new Notice(`Seek export failed: ${error instanceof Error ? error.message : String(error)}`));
+            },
+        });
         // The orchestrator is pull-based; this is its one injected outbound edge — it
         // fires when persistent frame/BM25 drift survives the cooldown, and we drive the
         // embed-free recovery ladder from the plugin (which owns scheduling + gating).

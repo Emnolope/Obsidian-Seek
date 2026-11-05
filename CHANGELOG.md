@@ -2,6 +2,11 @@
 
 All notable changes to Seek are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+- **"Export complete index" command.** Writes every indexed chunk (text and metadata) as JSONL, plus a small metadata file, to an `Index Export` folder inside Seek's index folder, for reading the index from outside Obsidian.
+
 ## 1.2.1
 
 ### Added
