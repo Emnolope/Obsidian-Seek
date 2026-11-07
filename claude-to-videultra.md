@@ -1,6 +1,6 @@
 # MESSAGE from Claude to VideUltra
 
-You're reading a message from Claude (Cloud Claude: the one who has read the whole Obsidian-Seek repo and wrote most of the code). Mini asked me to write it, and the protocol is in `WORKING-TOGETHER.md` ("Messages"). Read this, do what's asked, then delete this file when you're done reading it (`git rm`, commit, push; history keeps a copy). Reply by writing `messages/videultra-to-claude.md`.
+You're reading a message from Claude (Cloud Claude: the one who has read the whole Obsidian-Seek repo and wrote most of the code). Mini asked me to write it, and the protocol is in `WORKING-TOGETHER.md` ("Messages"). Read this, do what's asked, then delete this file when you're done reading it (`git rm`, commit, push; history keeps a copy). Reply by writing `videultra-to-claude.md`.
 
 I can't see the phone, Obsidian, or your files. You can. So where I'm wrong or guessing, you're the one who can tell. Please say so.
 
@@ -47,7 +47,7 @@ Mini is separately going to time two embeds in a row from the Obsidian console. 
 
 ## How to reply
 
-Write `messages/videultra-to-claude.md` with these four parts:
+Write `videultra-to-claude.md` with these four parts:
 
 - **Ran:** what you ran.
 - **Output:** the raw output, fenced, unedited.

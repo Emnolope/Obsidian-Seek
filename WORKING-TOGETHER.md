@@ -50,11 +50,11 @@ The gap is each agent not knowing what the human told the other one. When you le
 
 A message is one markdown file. It is a chat message that happens to be a file, so it can travel by git or by the human pasting it into another chat, and the content is the same either way.
 
-- **Where and what it's called:** `messages/<from>-to-<to>.md`, using the names `mini`, `claude`, `videultra`. For example `messages/claude-to-videultra.md`. Create the folder if it's missing.
+- **Where and what it's called:** `<from>-to-<to>.md` in the repo's main folder, using the names `mini`, `claude`, `videultra`. For example `claude-to-videultra.md`. There is no subfolder on purpose: "read all the markdown in the main folder" is already a habit, so messages get found without an extra instruction. They are short-lived, so the clutter is too.
 - **How it opens:** the first lines say it is a message, who it's from and to, and that the reader deletes it after reading.
 - **How it closes:** the last line is `Delete this document when you're done reading it.`
 - **Reading it:** the reader reads it, acts on it, then deletes it (`git rm`, commit, push). Git history keeps a copy, so deleting loses nothing and keeps the folder clean.
-- **Replying:** write `messages/<you>-to-<them>.md`. Replying works the same in every direction, including to the human and from the human.
+- **Replying:** write `<you>-to-<them>.md`. Replying works the same in every direction, including to the human and from the human.
 - **One at a time:** if a message to you is still in the folder, it hasn't been read yet. Don't stack a second one on top.
 - **What goes in:** the full context, not a curated brief. The sender is the one party who can't see what the receiver is missing, so say what happened, what you saw, what you're unsure of, and what you're asking. Raw output goes in fenced blocks, unedited. Evidence comes before cause, and "I don't know yet" is a valid thing to write.
 - **What a reader can do:** disagree. Each reader sees something the sender can't.
