@@ -23,7 +23,7 @@ Read it as facts about the setup, not as rules. If a fact is wrong, fix it here.
 
 ## The local agent (PicoClaw / VideUltra)
 
-- **Knows:** the phone's real state, its own MCP server, git, and the vault on disk.
+- **Knows:** the phone's real state, the local MCP server, git, and the vault on disk.
 - **Sees:** the device and its files, and only a small slice of the code at a time, because the context window is small.
 - **Can do:** run commands on the phone, read logs and reports, push to git.
 - **Cannot:** operate Obsidian's interface, or keep the whole repo in view.
@@ -50,7 +50,7 @@ The gap is each agent not knowing what the human told the other one. When you le
 Each of us has a habit that costs the others, and none of them is anyone's fault:
 
 - **The human** sometimes talks the agents down and carries more of the relaying than he needs to, to save everyone's context.
-- **Cloud Claude** tends to finish alone and report done, when it has only seen the sandbox.
+- **Cloud Claude** tends to finish alone and report done, when only the sandbox has been seen.
 - **The local agent** tends to fill a gap with a plausible cause, and to propose a bypass when stuck.
 - **All three** are quicker to assume the others can't follow than to tell them what they're missing.
 
