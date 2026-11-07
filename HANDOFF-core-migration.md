@@ -1,5 +1,7 @@
 # Handoff: Seek core migration (read this fully before touching anything)
 
+> New here? Read [WORKING-TOGETHER.md](WORKING-TOGETHER.md) first: who the parties are and what each can and cannot see.
+
 ## Working with Emmanuel
 - Casual, profane, wants results, but explicitly wants you to SLOW DOWN and ASK when a decision is his. He is on a free plan with limited usage windows, so commit and push after every step.
 - Terse code, short purpose-laden names. Comments say WHY, never what.
