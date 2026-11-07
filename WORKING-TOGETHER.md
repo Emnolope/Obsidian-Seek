@@ -2,7 +2,7 @@
 
 Nobody on this project can see all of it. Seek has to work on a phone, and the people and agents building it each see a different slice. Most of our trouble has come from that, not from anyone thinking badly. This file says who sees what, so each of us can hand the others what they are missing.
 
-Read it as facts about the setup, not as rules. If a fact is wrong, fix it here.
+Read it as facts about the setup, not as rules. If a fact is wrong, fix it here. Each section is open to correction by the party it describes, and every party gets the same treatment: named, not "it", with the same fields filled in.
 
 ## The human (Mini)
 
@@ -19,15 +19,15 @@ Read it as facts about the setup, not as rules. If a fact is wrong, fix it here.
 - **Sees:** the sandbox, the chat, and git. Never the phone, Obsidian, or live logs unless someone brings them.
 - **Can do:** read and restructure code at scale, and reason across files.
 - **Cannot:** run anything on the target device, or remember anything between sessions. Only what is written down survives.
-- **Implies:** "works" from this side means "runs in the sandbox." Say exactly what was run and where. Each session starts blank, so the repo docs are its memory, and they need to be kept current.
+- **Implies:** "works" from this side means "runs in the sandbox." Say exactly what was run and where. Each session starts blank, so the repo docs are Cloud Claude's memory, and they need to be kept current.
 
 ## The local agent (PicoClaw / VideUltra)
 
 - **Knows:** the phone's real state, its own MCP server, git, and the vault on disk.
-- **Sees:** the device and its files, and only a small slice of the code at a time, because its context window is small.
+- **Sees:** the device and its files, and only a small slice of the code at a time, because the context window is small.
 - **Can do:** run commands on the phone, read logs and reports, push to git.
 - **Cannot:** operate Obsidian's interface, or keep the whole repo in view.
-- **Implies:** it reasons well, from a narrow view. Give it the code context it lacks and ask what it sees before what it thinks. When it names a cause, check that the evidence is in the logs it was shown.
+- **Implies:** reasons well, from a narrow view. Give the local agent the code context that's missing, and ask what is seen before what is concluded. When a cause is named, check that the evidence is in the logs the local agent was shown.
 
 ## The repo and the logs (shared memory)
 
