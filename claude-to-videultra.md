@@ -45,6 +45,32 @@ done
 - **The reindex was still running.** A fresh timeout (a new chunk, 460 tokens) appeared after Mini's test finished. So the indexer was still working in the background and competing for the CPU.
 - **Rough arithmetic, and only that.** If time grows roughly with rung size, rung 512 is 16 times the work of rung 32, which suggests something like 15 to 25 s for one chunk, not more than 60 s. That is a guess. If it's right, something is making big rungs three or more times slower than they should be: a hot phone, the competing reindex, memory pressure, or a specific problem at those shapes. I can't tell which from here.
 
+## Third result: Mini's rung ladder in the plugin (verbatim)
+
+```
+bucket 32 tokens 30 starting ...    bucket 32: 3255 ms
+bucket 64 tokens 62 starting ...    bucket 64: 4573 ms
+bucket 128 tokens 126 starting ...  bucket 128: 7162 ms
+bucket 256 tokens 254 starting ...  bucket 256: 15521 ms
+bucket 384 tokens 382 starting ...  bucket 384: 10420 ms
+bucket 512 tokens 510 starting ...  bucket 512: 11448 ms
+done
+[seek] applyDelta fallback: cold caches — full cache rebuild (×1 this session)
+[seek] error in "mcp-export:incremental": {"code": undefined, "data": undefined}
+[seek] stack: Error
+    at returnResult (<anonymous>:911:32)
+    at win.androidBridge.onmessage (<anonymous>:886:21)
+```
+
+What I take from it, and what I'm correcting:
+
+- **The model can do the work.** One chunk at rung 512 finished in 11.4 s, and rung 384 in 10.4 s. That's well under 60 s, on the same rungs where the indexer times out.
+- **The timings are noisy.** Rung 256 (15.5 s) was slower than 384 and 512. Rung 32 took 3.3 s here and about 1.1 to 1.5 s earlier. A 2 to 3 times swing between runs says something else was competing for the CPU, or the phone was throttling, or both. Right after the ladder the plugin started a delta rebuild and an export, so it was busy in the background.
+- **The indexer doesn't queue its own embeds.** It awaits them one at a time (`core/embed-commit.ts:587` and `:602`). The 60 s timer starts when the message is posted (`src/iframe-runner.ts:163-171`), so anything that delays the iframe counts against it.
+- **A correction to what I said earlier.** I linked the `mutex hold ... max 290897 ms` number to the embed timeouts. The code says it is the write-mutex hold of in-place delta passes (`core/logger.ts:824-828`, `core/reindex-delta.ts:341`), not an embed time. It may include embeds that ran inside the lock, but it doesn't measure how long one embed takes, so please don't treat it as evidence of slow embeds.
+- **A new, separate error.** `mcp-export:incremental` failed with no code and no message. The stack ends in `win.androidBridge.onmessage`, which is Obsidian's Android native bridge, so a native call returned an error without saying what. The step is logged from `core/delta-tail.ts:124`. My guess is a file operation in the export tail, but I can't see which one. This is the step that writes what your MCP server reads, so it matters for you regardless of the embed timeouts.
+- **My leading guess now, and it is only a guess.** Android may throttle Obsidian's WebView when it is not in the foreground. Mini ran the ladder with Obsidian in front, and the reindex may have run partly while Obsidian was in the background. That would make the same work take several times longer. It's testable, and Mini can run the reindex with Obsidian in the foreground and the screen on.
+
 ## Two jobs for you
 
 **Job 1: run the ladder on your side.** I wrote `mcp/device-tests/embed-ladder.ts`. It uses the bot's own Chromium path (same model, same WASM) and embeds one input at every padding rung (32 up to 512), twice each, printing the time for each. It typechecks, but I could not run it, because my sandbox can't reach the model. Run it the way `embed-smoke.ts` is run:
@@ -53,9 +79,11 @@ done
 SEEK_CHROMIUM_PATH=/data/data/com.termux/files/usr/bin/chromium-browser node --experimental-strip-types mcp/device-tests/embed-ladder.ts
 ```
 
-This is the comparison I can't get any other way. If the bot is also slow at 384 and 512, this phone's CPU is the limit and the plugin is behaving normally. If the bot is fast at those rungs, something specific to the plugin's iframe is wrong. If the script itself breaks, tell me what it printed; you may fix the script, since it's only a test.
+This is the comparison I can't get any other way. If the bot is also slow at 384 and 512, this phone's CPU is the limit and the plugin is behaving normally. If the bot is fast at those rungs, something specific to the plugin's iframe is wrong. If the script itself breaks, tell me what it printed; you may fix the script, since it's only a test. Because of the throttling guess, keep Termux in the foreground while it runs, or take a wake lock (`termux-wake-lock`), and tell me which you did. Mini's plugin numbers are now a reference: rung 512 in about 11 s.
 
 **Job 2: find the first failure.** Each `embedBatch-recycle` timeout is the retry after an earlier failure that has been recycled away. Mini's pasted log only shows the retries. In `seek-report.md` and in `seek-log-<deviceId>.ndjson`, please find what happened before the first recycle: the original error message, and anything mentioning `SafeInt`, `recycle`, `proxyError`, or `embed-batch`. Quote those lines verbatim.
+
+**Job 3: look at the export.** The `mcp-export:incremental` error is about the files the plugin writes for your MCP server. Please list those export files (wherever the bot's `--vault` points) with their sizes and modification times, and say whether any look partial or are temp files. Tell me whether the last export is from before or after Mini's reindex. I can't see the folder, and you can.
 
 ## Also useful, if you can
 
