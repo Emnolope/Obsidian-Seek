@@ -73,18 +73,9 @@ What I take from it, and what I'm correcting:
 
 ## Job 0 (new, and the one that matters most): can you reach Obsidian's inspector from Termux?
 
-Mini wants you to be able to run the console checks yourself, so the human stops being the relay. Here is the chain as I understand it:
+Mini wants you to be able to run the console checks yourself, so the human stops being the relay. The whole procedure is in `PILOTING.md` in the main folder: an ordered table of who does what (Mini, you, me), what "done" looks like at each step, and what to do when a step fails. Your rows are steps 2, 4, 5, 7, 8, 9 and 11. Please read it first.
 
-- The official Obsidian CLI (`eval`, `dev:console`, `dev:errors`, `dev:screenshot`, `command`) is a wrapper over the Chrome DevTools Protocol (CDP). The CLI is desktop-only.
-- Obsidian on Android is a WebView app. The plugin's stack trace shows `win.androidBridge`, which is the Android build. Obsidian's own docs say Android Obsidian can be inspected with Chrome remote debugging (documented over USB).
-- Termux's `android-tools` can pair with and connect to the same phone's Wireless debugging on `localhost`. If that works, you may be able to reach the same inspector from Termux, with no computer involved.
-
-I haven't verified any of the last step. Please try this chain and **stop at the first step that fails**, quote what it printed, and tell me which step it was.
-
-1. **Check the basics.** `getprop ro.build.version.release` (wireless debugging needs Android 11 or later). I also believe it needs the phone to be on a Wi-Fi network to turn on; tell me if it won't.
-2. **Pair and connect.** `pkg install android-tools`. Mini does the one human step: Settings → Developer options → Wireless debugging → Pair device with pairing code, and tells you the pairing port and code. Then `adb pair localhost:<pairing-port> <code>`, `adb connect localhost:<port>`, `adb devices`.
-3. **Find Obsidian's inspector.** With Obsidian open in the foreground: `adb shell cat /proc/net/unix | grep devtools_remote`. Chrome's WebView docs say to expect a socket like `@webview_devtools_remote_<pid>` (from my memory of those docs; please verify). Then `adb forward tcp:9222 localabstract:webview_devtools_remote_<pid>` and `curl localhost:9222/json`. That should list Obsidian's page and a `webSocketDebuggerUrl`.
-4. **Evaluate `1+1`.** Using the `webSocketDebuggerUrl` from step 3, with Node's built-in WebSocket:
+Run the steps in order and **stop at the first one that fails**. Quote what it printed, and tell me which step it was. The `1+1` snippet for step 8 is here:
 
 ```js
 const ws = new WebSocket(URL);
@@ -92,11 +83,7 @@ ws.onopen = () => ws.send(JSON.stringify({id:1, method:'Runtime.evaluate', param
 ws.onmessage = e => { console.log(e.data); ws.close(); };
 ```
 
-You should get a result of `2`.
-
-**Boundaries:** use adb only for the steps above. Don't change any Android setting (the gist I read suggests a phantom-process setting; please don't) without telling Mini first. Don't touch other apps. And don't run anything in Obsidian beyond `1+1` until we've talked.
-
-**Why it matters:** if step 4 works, I'll write a small script that gives you the same verbs as the official CLI (`eval`, `dev:console`, `dev:errors`, `dev:screenshot`, `command`) on top of CDP. Then you can run the rung ladder and the reindex checks yourself, and report to me.
+You should get a result of `2`. Boundaries: use adb only for those steps, change no Android setting without telling Mini first, don't touch other apps, and run nothing in Obsidian beyond `1+1` until we've talked.
 
 Do this before the other jobs below. If it's blocked waiting for Mini, do Jobs 1 to 3 in the meantime.
 
